@@ -15,3 +15,13 @@ export * from './vectors.js';
 export * from './embeddings.js';
 export * from './dedupe.js';
 export * from './clustering.js';
+export * from './blocklist.js';
+export * from './format.js';
+
+// NOT re-exported: ./storage.js and ./backfill.js.
+//
+// Everything above is isomorphic — it runs in Node (the Phase 0 CLI) and in the
+// browser (the extension). Those two need IndexedDB, so they are browser-only,
+// and re-exporting them here would drag DOM globals into the Node typecheck and
+// let scripts/ import something that cannot run there. Extension code imports
+// them by path.

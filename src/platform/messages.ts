@@ -11,12 +11,24 @@
  * centrally so no listener has to remember to.
  */
 
+import type { BackfillProgress } from '../lib/backfill.js';
+import type { SensitiveCategory } from '../lib/blocklist.js';
+import type { RawVisit } from '../lib/types.js';
+
 export type Context = 'background' | 'offscreen' | 'dashboard' | 'content';
 
 export type Message =
   | { target: 'background'; type: 'GET_STATUS' }
   | { target: 'background'; type: 'PING'; from: Context }
-  | { target: 'offscreen'; type: 'PING'; from: Context };
+  | { target: 'offscreen'; type: 'PING'; from: Context }
+  // Backfill. The dashboard talks only to the background, which routes to the
+  // offscreen document — §3 gives the service worker the routing role.
+  | { target: 'background'; type: 'START_BACKFILL' }
+  | { target: 'background'; type: 'GET_BACKFILL_PROGRESS' }
+  // Settings travel with the job: offscreen documents are restricted to
+  // chrome.runtime, so they cannot read chrome.storage themselves.
+  | { target: 'offscreen'; type: 'RUN_BACKFILL'; visits: RawVisit[]; blockedCategories: SensitiveCategory[] }
+  | { target: 'offscreen'; type: 'GET_BACKFILL_PROGRESS' };
 
 export interface PongResponse {
   ok: true;
@@ -38,9 +50,21 @@ export interface StatusResponse {
   };
 }
 
+export interface AcceptedResponse {
+  ok: true;
+  accepted: boolean;
+  /** Why it was refused, when accepted is false. */
+  reason?: string;
+}
+
+export interface ProgressResponse {
+  ok: true;
+  progress: BackfillProgress;
+}
+
 export type ErrorResponse = { ok: false; error: string };
 
-export type Response = PongResponse | StatusResponse | ErrorResponse;
+export type Response = PongResponse | StatusResponse | AcceptedResponse | ProgressResponse | ErrorResponse;
 
 /**
  * Which reply belongs to which request. `sendMessage` uses this to type its
@@ -51,6 +75,9 @@ export type Response = PongResponse | StatusResponse | ErrorResponse;
 export interface ReplyMap {
   PING: PongResponse;
   GET_STATUS: StatusResponse;
+  START_BACKFILL: AcceptedResponse;
+  RUN_BACKFILL: AcceptedResponse;
+  GET_BACKFILL_PROGRESS: ProgressResponse;
 }
 
 export type ReplyFor<M extends Message> = ReplyMap[M['type']];
@@ -75,7 +102,20 @@ export function isStatusResponse(value: unknown): value is StatusResponse {
   return isRecord(offscreen) && typeof offscreen['reachable'] === 'boolean' && typeof offscreen['attempts'] === 'number';
 }
 
+export function isAcceptedResponse(value: unknown): value is AcceptedResponse {
+  return isRecord(value) && value['ok'] === true && typeof value['accepted'] === 'boolean';
+}
+
+export function isProgressResponse(value: unknown): value is ProgressResponse {
+  if (!isRecord(value) || value['ok'] !== true) return false;
+  const progress = value['progress'];
+  return isRecord(progress) && typeof progress['stage'] === 'string' && isRecord(progress['counts']);
+}
+
 export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean } = {
   PING: isPongResponse,
   GET_STATUS: isStatusResponse,
+  START_BACKFILL: isAcceptedResponse,
+  RUN_BACKFILL: isAcceptedResponse,
+  GET_BACKFILL_PROGRESS: isProgressResponse,
 };

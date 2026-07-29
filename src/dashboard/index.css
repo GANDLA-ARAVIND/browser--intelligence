@@ -142,6 +142,148 @@ li[data-state="fail"] .dot {
   overflow-y: auto;
 }
 
+.panel + .panel {
+  margin-top: 1.25rem;
+}
+
+.bar {
+  margin-top: 1.1rem;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ok);
+  transition: width 220ms ease-out;
+}
+
+/* The model download is a distinct stage; colouring it differently stops it
+   reading as "embedding is mysteriously slow". */
+.bar-fill[data-stage="loading-model"] {
+  background: linear-gradient(90deg, var(--pending), var(--muted));
+}
+
+.bar-fill[data-stage="error"] {
+  background: var(--fail);
+}
+
+.bar-caption {
+  margin: 0.45rem 0 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+}
+
+.counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 1.25rem 0 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--line);
+}
+
+.count dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.count dd {
+  margin: 0.15rem 0 0;
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.error-note {
+  margin: 1rem 0 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--fail);
+  border-radius: 6px;
+  color: var(--fail);
+  font-size: 0.875rem;
+}
+
+.timings {
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--line);
+}
+
+.timings h3 {
+  margin: 0 0 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.timings table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.timings th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.75rem;
+  padding-bottom: 0.35rem;
+}
+
+.timings th:first-child,
+.timings td:first-child {
+  text-align: left;
+}
+
+.timings td {
+  text-align: right;
+  padding: 0.25rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.timings .detail {
+  margin: 0.7rem 0 0;
+  font-size: 0.8125rem;
+}
+
+.settings-intro {
+  margin: 0 0 1rem;
+}
+
+.settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.settings-list label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.65rem;
+  align-items: start;
+  cursor: pointer;
+  font-size: 0.9375rem;
+}
+
+.settings-list input {
+  margin: 0.25rem 0 0;
+  accent-color: var(--ok);
+}
+
+.settings-list input:disabled + span {
+  opacity: 0.55;
+}
+
 .note {
   margin-top: 2rem;
   color: var(--muted);

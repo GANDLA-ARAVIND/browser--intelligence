@@ -22,7 +22,9 @@ import {
   openDashboard,
   sendMessage,
 } from '../platform/browser.js';
-import type { Message, Response, StatusResponse } from '../platform/messages.js';
+import { readHistoryWindows } from '../platform/history.js';
+import { loadSettings } from '../platform/settings.js';
+import type { AcceptedResponse, Message, Response, StatusResponse } from '../platform/messages.js';
 
 const serviceWorkerStartedAt = Date.now();
 
@@ -51,6 +53,44 @@ async function probeOffscreen(): Promise<StatusResponse['offscreen']> {
   return { reachable: false, respondedAt: null, attempts: maxAttempts };
 }
 
+/**
+ * Reads history and hands it to the offscreen document.
+ *
+ * The worker does the reading because offscreen documents are restricted to
+ * chrome.runtime — every other extension API has to be reached by message. It
+ * does *not* do the embedding: that would block the worker and die with it.
+ */
+async function startBackfill(): Promise<AcceptedResponse> {
+  await ensureOffscreenDocument();
+
+  const running = await sendMessage({ target: 'offscreen', type: 'GET_BACKFILL_PROGRESS' });
+  const stage = running?.ok === true && 'progress' in running ? running.progress.stage : 'idle';
+  if (stage !== 'idle' && stage !== 'done' && stage !== 'error') {
+    return { ok: true, accepted: false, reason: `already running (${stage})` };
+  }
+
+  console.log('[background] reading history in 7-day windows…');
+  const visits = await readHistoryWindows((progress) => {
+    console.log(`[background] window ${progress.window}/${progress.totalWindows} — ${progress.rowsSoFar} rows`);
+  });
+  console.log(`[background] ${visits.length} raw rows; handing off to offscreen`);
+
+  // The offscreen document acknowledges immediately and runs detached. Awaiting
+  // completion here would hold a port open across a service-worker sleep, and
+  // the port would die long before a 2-minute backfill finished.
+  const settings = await loadSettings();
+  console.log('[background] blocked categories:', settings.blockedCategories.join(', ') || '(none)');
+
+  const accepted = await sendMessage({
+    target: 'offscreen',
+    type: 'RUN_BACKFILL',
+    visits,
+    blockedCategories: settings.blockedCategories,
+  });
+  if (accepted === null) return { ok: true, accepted: false, reason: 'offscreen document did not accept the job' };
+  return accepted;
+}
+
 function handle(message: Message): Promise<Response> | Response | undefined {
   switch (message.type) {
     case 'PING':
@@ -62,6 +102,19 @@ function handle(message: Message): Promise<Response> | Response | undefined {
         console.log(`[background] offscreen probe: reachable=${offscreen.reachable} attempts=${offscreen.attempts}`);
         return { ok: true, serviceWorkerStartedAt, offscreen } satisfies StatusResponse;
       });
+
+    case 'START_BACKFILL':
+      return startBackfill().catch((error: unknown) => ({
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+
+    // Pure proxy. Progress lives in the offscreen document, which outlives this
+    // worker — anything cached here would be a lie the moment it sleeps (§14).
+    case 'GET_BACKFILL_PROGRESS':
+      return ensureOffscreenDocument()
+        .then(() => sendMessage({ target: 'offscreen', type: 'GET_BACKFILL_PROGRESS' }))
+        .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
 
     default:
       return undefined;

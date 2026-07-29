@@ -8,6 +8,7 @@
     "validate": "tsx scripts/validate.ts",
     "sanity": "tsx scripts/sanity.ts",
     "export-history": "node --no-warnings scripts/export-history.mjs",
+    "fetch-model": "node scripts/fetch-model.mjs",
     "build": "vite build",
     "dev": "vite build --watch",
     "check-extension": "node scripts/check-extension.mjs",

@@ -5,6 +5,7 @@
  * caller — the same function serves the Phase 0 CLI and the extension backfill.
  */
 
+import { isSensitive, type SensitiveCategory } from './blocklist.js';
 import { isJunkTitle } from './junk.js';
 import { deriveBoilerplateSuffixes, stripBoilerplate, tidyTitle } from './titles.js';
 import { isLocalHost, isSearchResultPage, normalizeUrl } from './url.js';
@@ -16,6 +17,13 @@ export const MIN_TITLE_LENGTH = 15;
 export interface FilterOptions {
   /** Strip data-derived site boilerplate before embedding. */
   stripSuffixes: boolean;
+  /**
+   * §9 categories to exclude. Omitted or empty means no blocking, which keeps
+   * the Phase 0 harness byte-reproducible against its recorded baseline. The
+   * extension passes the user's current settings, defaulting to all
+   * categories.
+   */
+  blockedCategories?: readonly SensitiveCategory[];
 }
 
 export interface FilterResult {
@@ -46,12 +54,14 @@ export function filterHistory(visits: RawVisit[], perVisit: boolean, options: Fi
     droppedScheme: 0,
     droppedLocal: 0,
     droppedSearch: 0,
+    droppedBlocked: 0,
     droppedJunkTitle: 0,
     droppedShortTitle: 0,
     droppedDuplicate: 0,
     kept: 0,
   };
   const junkDropped: string[] = [];
+  const blockedCategories = options.blockedCategories ?? [];
 
   // Pass 1 — structural filters, keyed by normalized URL.
   const byUrl = new Map<string, Candidate>();
@@ -77,6 +87,11 @@ export function filterHistory(visits: RawVisit[], perVisit: boolean, options: Fi
     }
     if (isLocalHost(parsed.hostname.toLowerCase())) {
       stats.droppedLocal++;
+      continue;
+    }
+    // §9: exclude *before* extraction — these must never reach the embedder.
+    if (blockedCategories.length > 0 && isSensitive(visit.url, blockedCategories)) {
+      stats.droppedBlocked++;
       continue;
     }
     if (isSearchResultPage(parsed)) {

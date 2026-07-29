@@ -36,6 +36,8 @@ export interface FilterStats {
   droppedScheme: number;
   droppedLocal: number;
   droppedSearch: number;
+  /** §9 sensitive-category blocklist. */
+  droppedBlocked: number;
   droppedJunkTitle: number;
   droppedShortTitle: number;
   droppedDuplicate: number;

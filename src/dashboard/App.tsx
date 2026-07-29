@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Backfill } from './Backfill.js';
+import { PrivacySettings } from './PrivacySettings.js';
 import { sendMessage } from '../platform/browser.js';
 
 type Probe = { label: string; state: 'checking' | 'ok' | 'fail'; detail: string };
@@ -89,9 +91,14 @@ export function App(): React.JSX.Element {
         </div>
       </section>
 
+      <Backfill />
+
+      <PrivacySettings />
+
       <p className="note">
-        Phase 1, step 1 — skeleton only. Search, the session timeline and topic
-        cards arrive in later phases. Nothing is captured or analysed yet.
+        Phase 1, step 3 — backfill only. Search, the session timeline and topic
+        cards arrive in later phases. Everything runs on this machine; nothing
+        is transmitted.
       </p>
     </main>
   );

@@ -47,6 +47,23 @@ try {
 
 check(manifest.manifest_version === 3, 'manifest_version is 3', String(manifest.manifest_version));
 
+// JSON has no comments. Chrome logs unrecognised keys as manifest errors, so a
+// "//explanation" key is a visible defect, not a harmless annotation.
+const commentKeys = Object.keys(manifest).filter((key) => key.startsWith('//'));
+check(commentKeys.length === 0, 'no comment-style keys in manifest', commentKeys.join(', ') || 'none');
+
+// The ONNX runtime cannot instantiate without this under MV3.
+const csp = manifest.content_security_policy?.extension_pages ?? '';
+check(csp.includes("'wasm-unsafe-eval'"), "CSP declares 'wasm-unsafe-eval'", csp || '(unset)');
+check(!/https?:\/\//.test(csp), 'CSP allows no remote script origins', csp || '(unset)');
+
+// The no-network guarantee: nothing outside the package.
+check(
+  manifest.host_permissions === undefined,
+  'no host_permissions (model ships in-package)',
+  (manifest.host_permissions ?? []).join(', ') || 'none'
+);
+
 const REQUIRED_PERMISSIONS = ['history', 'storage', 'offscreen'];
 const permissions = manifest.permissions ?? [];
 for (const permission of REQUIRED_PERMISSIONS) {
