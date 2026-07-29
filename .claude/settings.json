@@ -10,5 +10,4 @@ Set-Content -Path ".claude\settings.json" -Encoding ascii -Value @'
       "Bash(*git push*)"
     ]
   }
-}
-'@
+}'@'

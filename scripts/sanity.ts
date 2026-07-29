@@ -29,22 +29,40 @@ function report(label: string, detail: string, ok: boolean): void {
 // 1. Drift guard — prove validate.ts really does what this script tests
 // ---------------------------------------------------------------------------
 
+/**
+ * Deliberately re-declares the constants above and greps the source, rather
+ * than importing them — importing would make the guard vacuously true. It
+ * checks src/lib, which is where the extension reads them from too, so a change
+ * that would silently alter the embedding space fails here first.
+ */
 async function checkCallSiteMatches(): Promise<void> {
   console.log('\n[1] call-site drift guard');
-  const source = await readFile(new URL('./validate.ts', import.meta.url), 'utf8');
-  const lines = source.split('\n');
 
-  const expectations: Array<{ label: string; needle: RegExp }> = [
-    { label: `model is ${MODEL}`, needle: new RegExp(`['"]${MODEL.replace('/', '\\/')}['"]`) },
-    { label: "pipeline passes { quantized: true }", needle: /pipeline\(\s*'feature-extraction',\s*MODEL,\s*\{\s*quantized:\s*true\s*\}/ },
-    { label: "extractor passes pooling: 'mean'", needle: /extractor\([^)]*pooling:\s*'mean'/ },
-    { label: 'extractor passes normalize: true', needle: /extractor\([^)]*normalize:\s*true/ },
-    { label: `DIM is ${DIM}`, needle: new RegExp(`DIM\\s*=\\s*${DIM}\\b`) },
+  const expectations: Array<{ file: string; label: string; needle: RegExp }> = [
+    {
+      file: 'embeddings.ts',
+      label: `model is ${MODEL}`,
+      needle: new RegExp(`['"]${MODEL.replace('/', '\\/')}['"]`),
+    },
+    {
+      file: 'embeddings.ts',
+      label: 'pipeline requests the quantized build',
+      needle: /quantized:\s*(options\.quantized\s*\?\?\s*)?true/,
+    },
+    { file: 'embeddings.ts', label: "extractor passes pooling: 'mean'", needle: /extractor\([^)]*pooling:\s*'mean'/ },
+    { file: 'embeddings.ts', label: 'extractor passes normalize: true', needle: /extractor\([^)]*normalize:\s*true/ },
+    { file: 'vectors.ts', label: `EMBEDDING_DIM is ${DIM}`, needle: new RegExp(`EMBEDDING_DIM\\s*=\\s*${DIM}\\b`) },
   ];
 
-  for (const { label, needle } of expectations) {
+  const cache = new Map<string, string[]>();
+  for (const { file, label, needle } of expectations) {
+    let lines = cache.get(file);
+    if (lines === undefined) {
+      lines = (await readFile(new URL(`../src/lib/${file}`, import.meta.url), 'utf8')).split('\n');
+      cache.set(file, lines);
+    }
     const index = lines.findIndex((line) => needle.test(line));
-    report(label, index === -1 ? 'not found in validate.ts' : `validate.ts:${index + 1}`, index !== -1);
+    report(label, index === -1 ? `not found in src/lib/${file}` : `src/lib/${file}:${index + 1}`, index !== -1);
   }
 }
 

@@ -1,8 +1,7 @@
 /**
  * Phase 0 — validation harness (CLAUDE.md §11).
  *
- * Standalone Node. No extension code, no LLM, no network beyond the one-time
- * MiniLM weight download. Answers the single riskiest question in the project:
+ * A thin CLI over src/lib. Answers the single riskiest question in the project:
  *
  *   do title embeddings, clustered, read like the developer's actual life?
  *
@@ -10,12 +9,41 @@
  * the premise is broken and it needs fixing here rather than after four weeks
  * of infrastructure.
  *
+ * The pipeline itself lives in src/lib and is shared with the extension. What
+ * stays here is Node-only: file IO, argument parsing, table printing, the
+ * comparison algorithms, and the sweep harness.
+ *
  *   npm run validate -- --help
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { performance } from 'node:perf_hooks';
+
+import {
+  buildNeighbourCache,
+  centroidOf,
+  clusterByMutualKnn,
+  collapseNearDuplicates,
+  componentsFromCache,
+  createEmbedder,
+  describeCluster,
+  dot,
+  dotVec,
+  EMBEDDING_BATCH_SIZE,
+  EMBEDDING_DIM,
+  EMBEDDING_MODEL,
+  expandGroups,
+  filterHistory,
+} from '../src/lib/index.js';
+import type {
+  Cluster,
+  DuplicateGroup,
+  FilterStats,
+  NeighbourCache,
+  Page,
+  RawVisit,
+} from '../src/lib/index.js';
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -98,291 +126,10 @@ if (OPTS.algo !== 'knn' && OPTS.algo !== 'community' && OPTS.algo !== 'kmeans') 
   fail(`unknown --algo "${OPTS.algo}" (expected "knn", "community", or "kmeans")`);
 }
 
-const MODEL = 'Xenova/all-MiniLM-L6-v2';
-const DIM = 384;
-const BATCH_SIZE = 32;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** One row of whatever the export happened to be, after shape sniffing. */
-interface RawVisit {
-  url: string;
-  title: string;
-  /** unix ms */
-  lastVisit: number;
-  /** absent in per-visit exports; derived by counting rows */
-  visitCount?: number;
-  typedCount?: number;
-}
-
-/** A survivor of the filter chain. */
-interface Page {
-  url: string;
-  normalizedUrl: string;
-  domain: string;
-  /** as it appeared in history */
-  title: string;
-  /** what actually gets embedded — boilerplate suffix removed */
-  embedText: string;
-  lastVisit: number;
-  visitCount: number;
-  typedCount: number;
-}
-
-interface Cluster {
-  members: number[];
-  centroid: Float32Array;
-  /** member index -> cosine similarity to centroid, aligned with `members` */
-  sims: number[];
-}
-
-// ---------------------------------------------------------------------------
-// URL normalization (CLAUDE.md §4)
-// ---------------------------------------------------------------------------
-
-/**
- * Tracking params carry no meaning and defeat dedupe. §4 names utm_*; the click
- * ID family is the same class of junk and is stripped alongside it.
- */
-const TRACKING_PARAM =
-  /^(utm_[a-z_]+|fbclid|gclid|gbraid|wbraid|msclkid|dclid|yclid|igshid|mc_cid|mc_eid|_ga|_gl|ref_src|ref_url|si|spm|scm|share_source)$/i;
-
-function normalizeUrl(raw: string): string | null {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return null;
-  }
-
-  u.hash = '';
-  u.username = '';
-  u.password = '';
-
-  const kept = new URLSearchParams();
-  for (const [key, value] of u.searchParams) {
-    if (!TRACKING_PARAM.test(key)) kept.append(key, value);
-  }
-  kept.sort(); // param order is not meaningful for identity
-  u.search = kept.toString() ? `?${kept.toString()}` : '';
-
-  u.hostname = u.hostname.toLowerCase().replace(/^www\./, '');
-  if ((u.protocol === 'http:' && u.port === '80') || (u.protocol === 'https:' && u.port === '443')) {
-    u.port = '';
-  }
-  if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
-    u.pathname = u.pathname.slice(0, -1);
-  }
-
-  return u.toString();
-}
-
-// ---------------------------------------------------------------------------
-// Filters (CLAUDE.md §9, §11)
-// ---------------------------------------------------------------------------
-
-function isLocalHost(host: string): boolean {
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
-  if (host === '::1' || host === '0.0.0.0' || host === 'host.docker.internal') return true;
-  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
-  if (/^169\.254\./.test(host)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
-  return false;
-}
-
-/**
- * Search engines are a closed, universal set — the same short list for every
- * user, in the spirit of the seed taxonomy (§6). Site-internal search is caught
- * generically by path shape instead, so no per-site knowledge is needed.
- */
-const SEARCH_ENGINE_HOST =
-  /^(google\.[a-z.]{2,}|bing\.com|duckduckgo\.com|lite\.duckduckgo\.com|search\.yahoo\.[a-z.]{2,}|yandex\.[a-z.]{2,}|baidu\.com|ecosia\.org|startpage\.com|search\.brave\.com|search\.marginalia\.nu|qwant\.com|ask\.com|searx\.[a-z.]{2,}|perplexity\.ai)$/i;
-
-const SEARCH_QUERY_KEY = new Set(['q', 'query', 'search_query', 'p', 'wd', 'text', 'k', 'searchterm']);
-const SEARCH_PATH_SEGMENT = new Set(['search', 'results', 'search_results']);
-
-function isSearchResultPage(u: URL): boolean {
-  const host = u.hostname.replace(/^www\./, '');
-  const hasQueryKey = [...u.searchParams.keys()].some((key) => SEARCH_QUERY_KEY.has(key.toLowerCase()));
-
-  if (SEARCH_ENGINE_HOST.test(host)) {
-    // Engine roots and redirect hops are navigation, never destinations.
-    if (u.pathname === '/' || u.pathname === '') return true;
-    if (/^\/(search|url|imgres|maps\/search|s)\b/.test(u.pathname)) return true;
-    if (hasQueryKey) return true;
-  }
-
-  // Generic site search: /search?q=..., /results?search_query=...
-  const segments = u.pathname.toLowerCase().split('/').filter(Boolean);
-  if (hasQueryKey && segments.some((s) => SEARCH_PATH_SEGMENT.has(s))) return true;
-
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Title cleanup
-// ---------------------------------------------------------------------------
-
-/**
- * Separators must be surrounded by whitespace: " : r/guitar" is site chrome,
- * but "Rust: ownership" is content. The frequency test below is the real
- * safeguard — a tail is only ever stripped if it recurs across many titles.
- */
-const TITLE_SEPARATOR = /\s+[|–—·•:»~\-]\s+/;
-/** "(3) Inbox" — unread counters from mail/social tabs. */
-const UNREAD_PREFIX = /^\(\d+\)\s*/;
-
-function tidyTitle(title: string): string {
-  return title.replace(UNREAD_PREFIX, '').replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Content-free interstitials: auth walls, bot checks, error pages, redirects.
- * They carry no topic, they recur in the hundreds under many different URLs
- * (so the normalized-URL dedupe never sees them), and once embedded they form
- * dense identical neighbourhoods that crowd out every real neighbour.
- *
- * Most of these are also auth pages, which §9 says must never be captured at
- * all — this list is the Phase 0 stand-in for that rule.
- *
- * Deliberately matched on the *whole* title, not as substrings: "Sign in" is
- * junk, but "How OAuth sign in works" is a real page about auth.
- */
-const JUNK_TITLE_EXACT: RegExp[] = [
-  /^(new tab|untitled|home|index|dashboard|welcome|error|errors?\s*page)$/i,
-  /^google accounts?$/i,
-  /^(sign|log)\s?(in|out|on|up)$/i,
-  /^(signin|login|logout|signup|register)$/i,
-  /^pre-?login$/i,
-  /^(bad request|forbidden|unauthorized|not found|access denied)$/i,
-  /^(apply )?confirmation$/i,
-  /^confirm access$/i,
-  /^password (checkup|reset)$/i,
-  // Titles with no letter or digit in ANY script — punctuation, emoji, blanks.
-  // Must be Unicode-aware: JS `\W` is ASCII-only, so /^\W*$/ classifies every
-  // title written entirely in Telugu, Hindi, Chinese, Arabic or Cyrillic as an
-  // empty shell and silently deletes it.
-  /^[^\p{L}\p{N}]*$/u,
-];
-
-/**
- * Unambiguous auth phrasing, matched at any length. "Sign in to X" and
- * "… | Sign In" are never article titles, and the 40-character cap below would
- * otherwise miss "Sign in to Navigate Opportunities | Infosys Careers" (51) and
- * every "SiteName — Sign In" where the product name leads.
- */
-const JUNK_TITLE_STRONG: RegExp[] = [
-  /^(sign|log)\s?(in|on)\s+(to|with)\b/i,
-  /^(multi|two)[- ]?factor authentication/i,
-  /^authentication required/i,
-  /^(verify|verifying) (your |that )?(identity|email|account|phone|mobile)/i,
-  /^(confirm|confirming) your (email|account|identity)/i,
-  /^session (has )?expired/i,
-  /^(verifying|verify) (that )?you'?re human/i,
-  /^verifying you are human/i,
-  // Auth phrase trailing after a separator: "Career Opportunities: Sign In".
-  /[-–—|·:/]\s*(sign\s?in|sign\s?on|log\s?in|login|signin|sign\s?up|signup)\s*$/i,
-  /[-–—|·:/]\s*((multi|two)[- ]?factor authentication|password reset|(email|phone|mobile) verification)\s*$/i,
-];
-
-/**
- * Prefix patterns, applied only to short titles. An interstitial announces
- * itself in a handful of words; a real article does not. Length is what keeps
- * "Error handling with Result and the question mark operator" — a Rust doc
- * page — out of the same bucket as "Error 404 (Not Found)".
- */
-const JUNK_TITLE_PREFIX: RegExp[] = [
-  // Bot checks and CDN interstitials
-  /^just a moment/i,
-  /^(please )?wait\b/i,
-  /^one moment/i,
-  /^checking your browser/i,
-  /^attention required/i,
-  /^(are you a robot|captcha|verify you are human)/i,
-  /^ddos[- ]guard/i,
-  /^security check/i,
-
-  // Auth walls — §9 says never capture these
-  /^(sign|log)\s?(in|out|on|up)\s*[-–—|·:]/i,
-  /^(signin|login|logout|signup)\s*[-–—|·:]/i,
-  /^2[- ]step verification/i,
-  /^account (verification|confirmation|recovery)/i,
-  /^(email|phone|mobile) verification/i,
-  /^reset your password/i,
-  /^password (checkup|reset|manager)\b/i,
-  /^(choose|select) an account/i,
-  /^confirm(ation)?\b/i,
-  /^accounts?\.google\.com/i,
-
-  // Errors and status pages — a digit or separator must follow, so that
-  // "Error handling…" is not mistaken for "Error 500 — Server".
-  /^(error\s*)?[45]\d{2}\b/i,
-  /^error\s*[-–—|·:#]/i,
-  /^(bad request|forbidden|unauthorized|access denied)\b/i,
-  /^page not found/i,
-  /^(site|server) (is )?(down|unavailable)/i,
-  /^service unavailable/i,
-  /^privacy error/i,
-  /^this site can'?t be reached/i,
-  /^problem loading page/i,
-
-  // Transient states
-  /^(loading|redirecting|connecting|processing|submitting)\b/i,
-  /^please enable javascript/i,
-];
-
-/** Above this length a title is descriptive enough to be real content. */
-const JUNK_PREFIX_MAX_LENGTH = 40;
-
-function isJunkTitle(title: string): boolean {
-  const candidate = title.trim();
-  if (candidate.length === 0) return true;
-  if (JUNK_TITLE_EXACT.some((pattern) => pattern.test(candidate))) return true;
-  if (JUNK_TITLE_STRONG.some((pattern) => pattern.test(candidate))) return true;
-  if (candidate.length > JUNK_PREFIX_MAX_LENGTH) return false;
-  return JUNK_TITLE_PREFIX.some((pattern) => pattern.test(candidate));
-}
-
-/**
- * Site boilerplate ("- YouTube", "| Hacker News") makes every page from one
- * domain look alike, and §4 is explicit that a domain is not a category. Rather
- * than hardcode a list — which §6 forbids — derive it: a trailing segment that
- * recurs across many otherwise-unrelated titles is chrome, not content.
- */
-function deriveBoilerplateSuffixes(titles: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const title of titles) {
-    const parts = title.split(TITLE_SEPARATOR);
-    if (parts.length < 2) continue;
-    const tail = parts[parts.length - 1]!.trim();
-    if (tail.length === 0 || tail.length > 40) continue;
-    counts.set(tail.toLowerCase(), (counts.get(tail.toLowerCase()) ?? 0) + 1);
-  }
-
-  const minOccurrences = Math.max(5, Math.round(titles.length * 0.003));
-  const boilerplate = new Map<string, number>();
-  for (const [tail, count] of counts) {
-    if (count >= minOccurrences) boilerplate.set(tail, count);
-  }
-  return boilerplate;
-}
-
-function stripBoilerplate(title: string, boilerplate: Map<string, number>): string {
-  let out = title;
-  // Loop: "Some Post - r/docker - Reddit" has two layers of chrome.
-  for (let pass = 0; pass < 3; pass++) {
-    const parts = out.split(TITLE_SEPARATOR);
-    if (parts.length < 2) break;
-    const tail = parts[parts.length - 1]!.trim();
-    if (!boilerplate.has(tail.toLowerCase())) break;
-    const remainder = parts.slice(0, -1).join(' - ').trim();
-    if (remainder.length < 8) break; // stripping would leave nothing to embed
-    out = remainder;
-  }
-  return out;
-}
+// Re-exported from src/lib so the CLI and the extension cannot drift apart.
+const MODEL = EMBEDDING_MODEL;
+const DIM = EMBEDDING_DIM;
+const BATCH_SIZE = EMBEDDING_BATCH_SIZE;
 
 // ---------------------------------------------------------------------------
 // Loading — sniff whichever export shape we were handed
@@ -461,154 +208,7 @@ async function loadHistory(path: string): Promise<LoadResult> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Filter chain
-// ---------------------------------------------------------------------------
 
-interface FilterStats {
-  raw: number;
-  droppedNoUrl: number;
-  droppedScheme: number;
-  droppedLocal: number;
-  droppedSearch: number;
-  droppedJunkTitle: number;
-  droppedShortTitle: number;
-  droppedDuplicate: number;
-  kept: number;
-}
-
-/** Titles removed by the junk filter, for `--list-junk` auditing. */
-const junkDropped: string[] = [];
-
-function filterHistory(visits: RawVisit[], perVisit: boolean): { pages: Page[]; stats: FilterStats } {
-  const stats: FilterStats = {
-    raw: visits.length,
-    droppedNoUrl: 0,
-    droppedScheme: 0,
-    droppedLocal: 0,
-    droppedSearch: 0,
-    droppedJunkTitle: 0,
-    droppedShortTitle: 0,
-    droppedDuplicate: 0,
-    kept: 0,
-  };
-
-  // Pass 1 — structural filters, keyed by normalized URL.
-  interface Candidate {
-    url: string;
-    normalizedUrl: string;
-    domain: string;
-    title: string;
-    lastVisit: number;
-    visitCount: number;
-    typedCount: number;
-  }
-  const byUrl = new Map<string, Candidate>();
-
-  for (const visit of visits) {
-    if (!visit.url) {
-      stats.droppedNoUrl++;
-      continue;
-    }
-
-    let parsed: URL;
-    try {
-      parsed = new URL(visit.url);
-    } catch {
-      stats.droppedNoUrl++;
-      continue;
-    }
-
-    // chrome://, about:, file:, extension pages, javascript: — §9 never captures these.
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      stats.droppedScheme++;
-      continue;
-    }
-    if (isLocalHost(parsed.hostname.toLowerCase())) {
-      stats.droppedLocal++;
-      continue;
-    }
-    if (isSearchResultPage(parsed)) {
-      stats.droppedSearch++;
-      continue;
-    }
-
-    const normalized = normalizeUrl(visit.url);
-    if (normalized === null) {
-      stats.droppedNoUrl++;
-      continue;
-    }
-
-    const title = tidyTitle(visit.title ?? '');
-    const existing = byUrl.get(normalized);
-
-    if (existing === undefined) {
-      byUrl.set(normalized, {
-        url: visit.url,
-        normalizedUrl: normalized,
-        domain: parsed.hostname.toLowerCase().replace(/^www\./, ''),
-        title,
-        lastVisit: visit.lastVisit,
-        // Per-visit exports carry no count; each row is one visit.
-        visitCount: visit.visitCount ?? 1,
-        typedCount: visit.typedCount ?? 0,
-      });
-      continue;
-    }
-
-    stats.droppedDuplicate++;
-
-    if (perVisit) {
-      // Each duplicate row is another visit — this is where visitCount comes from.
-      existing.visitCount += 1;
-    } else if ((visit.visitCount ?? 1) > existing.visitCount) {
-      // §11: on collision keep the entry with the highest visitCount.
-      existing.visitCount = visit.visitCount ?? 1;
-      existing.url = visit.url;
-      if (title.length > 0) existing.title = title;
-    }
-
-    existing.lastVisit = Math.max(existing.lastVisit, visit.lastVisit);
-    existing.typedCount = Math.max(existing.typedCount, visit.typedCount ?? 0);
-    if (existing.title.length === 0 && title.length > 0) existing.title = title;
-  }
-
-  // Pass 2 — derive boilerplate suffixes from the surviving titles, then apply
-  // the length filter to the text that will actually be embedded.
-  const candidates = [...byUrl.values()];
-  const boilerplate = OPTS.stripSuffixes
-    ? deriveBoilerplateSuffixes(candidates.map((c) => c.title))
-    : new Map<string, number>();
-
-  const pages: Page[] = [];
-  for (const candidate of candidates) {
-    const embedText = OPTS.stripSuffixes
-      ? stripBoilerplate(candidate.title, boilerplate)
-      : candidate.title;
-
-    // Checked against both forms: the suffix stripper turns "Sign in - Google
-    // Accounts" into "Sign in", and either spelling is junk.
-    if (isJunkTitle(candidate.title) || isJunkTitle(embedText)) {
-      stats.droppedJunkTitle++;
-      // The filter deletes real user data, so it has to be auditable: a bad
-      // pattern silently removing genuine pages is worse than a missed one.
-      junkDropped.push(candidate.title);
-      continue;
-    }
-    if (embedText.length < 15) {
-      stats.droppedShortTitle++;
-      continue;
-    }
-    pages.push({ ...candidate, embedText });
-  }
-
-  // Newest first (§10): a truncated run should still be a recent run.
-  pages.sort((a, b) => b.lastVisit - a.lastVisit);
-  stats.kept = pages.length;
-
-  reportBoilerplate(boilerplate);
-  return { pages, stats };
-}
 
 function reportBoilerplate(boilerplate: Map<string, number>): void {
   if (boilerplate.size === 0) return;
@@ -620,175 +220,35 @@ function reportBoilerplate(boilerplate: Map<string, number>): void {
 }
 
 // ---------------------------------------------------------------------------
-// Embedding — §11: titles only, batches of 32
+// Embedding — the lib does the inference; the progress bar is Node's business
 // ---------------------------------------------------------------------------
 
 async function embedTitles(texts: string[]): Promise<Float32Array> {
-  const { pipeline, env } = await import('@xenova/transformers');
-  env.cacheDir = './.models';
-
   console.log(`  loading ${MODEL} (quantized, ~23MB — downloaded once)…`);
-  const extractor = await pipeline('feature-extraction', MODEL, { quantized: true });
+  const embedder = await createEmbedder({ cacheDir: './.models' });
 
-  const matrix = new Float32Array(texts.length * DIM);
   const startedAt = performance.now();
   const isTty = process.stdout.isTTY === true;
-  let done = 0;
 
-  for (let offset = 0; offset < texts.length; offset += BATCH_SIZE) {
-    const batch = texts.slice(offset, offset + BATCH_SIZE);
-    const output = await extractor(batch, { pooling: 'mean', normalize: true });
-    const data = output.data as Float32Array;
-    matrix.set(data.subarray(0, batch.length * DIM), offset * DIM);
-
-    done += batch.length;
+  const matrix = await embedder.embed(texts, (done, total) => {
     const elapsed = (performance.now() - startedAt) / 1000;
     const rate = done / elapsed;
-    const eta = (texts.length - done) / rate;
-    const line = `  [embed] ${done}/${texts.length} (${((done / texts.length) * 100).toFixed(1)}%) · ${rate.toFixed(1)} titles/s · eta ${eta.toFixed(0)}s`;
+    const eta = (total - done) / rate;
+    const line = `  [embed] ${done}/${total} (${((done / total) * 100).toFixed(1)}%) · ${rate.toFixed(1)} titles/s · eta ${eta.toFixed(0)}s`;
 
+    // The old loop logged on `offset % (BATCH_SIZE * 10) === 0`, where offset
+    // was the batch's start index. Recovering it from `done` keeps the non-TTY
+    // cadence byte-identical.
+    const offset = Math.floor((done - 1) / BATCH_SIZE) * BATCH_SIZE;
     if (isTty) process.stdout.write(`\r${line.padEnd(78)}`);
-    else if (offset % (BATCH_SIZE * 10) === 0 || done === texts.length) console.log(line);
-  }
-  if (isTty) process.stdout.write('\n');
+    else if (offset % (BATCH_SIZE * 10) === 0 || done === total) console.log(line);
+  });
 
+  if (isTty) process.stdout.write('\n');
   return matrix;
 }
 
-// ---------------------------------------------------------------------------
-// Vector helpers — Float32Array only (§13)
-// ---------------------------------------------------------------------------
 
-/** Vectors come out of MiniLM L2-normalized, so cosine similarity is a dot product. */
-function dot(matrix: Float32Array, i: number, j: number): number {
-  const a = i * DIM;
-  const b = j * DIM;
-  let sum = 0;
-  for (let d = 0; d < DIM; d++) sum += matrix[a + d]! * matrix[b + d]!;
-  return sum;
-}
-
-function dotVec(matrix: Float32Array, i: number, vec: Float32Array): number {
-  const a = i * DIM;
-  let sum = 0;
-  for (let d = 0; d < DIM; d++) sum += matrix[a + d]! * vec[d]!;
-  return sum;
-}
-
-function centroidOf(matrix: Float32Array, members: number[]): Float32Array {
-  const centroid = new Float32Array(DIM);
-  for (const index of members) {
-    const base = index * DIM;
-    for (let d = 0; d < DIM; d++) centroid[d]! += matrix[base + d]!;
-  }
-  let norm = 0;
-  for (let d = 0; d < DIM; d++) norm += centroid[d]! * centroid[d]!;
-  norm = Math.sqrt(norm) || 1;
-  for (let d = 0; d < DIM; d++) centroid[d]! /= norm;
-  return centroid;
-}
-
-function describeCluster(matrix: Float32Array, members: number[]): Cluster {
-  const centroid = centroidOf(matrix, members);
-  const scored = members
-    .map((index) => ({ index, sim: dotVec(matrix, index, centroid) }))
-    .sort((a, b) => b.sim - a.sim);
-  return {
-    members: scored.map((s) => s.index),
-    sims: scored.map((s) => s.sim),
-    centroid,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Near-duplicate collapse
-// ---------------------------------------------------------------------------
-
-interface DuplicateGroup {
-  /** Index into `pages` of the member that represents the group. */
-  representative: number;
-  /** Indices into `pages`, representative included, sorted by visitCount desc. */
-  members: number[];
-}
-
-/**
- * Collapses near-identical pages into one node before clustering.
- *
- * LeetCode serves /problems/two-sum/, /description/ and /submissions/ as three
- * URLs under one title, so the normalized-URL dedupe never sees them. Twenty
- * such copies saturate a page's k nearest neighbours with itself, leaving no
- * room for a related-but-different page to link — every problem becomes its own
- * island and genuinely unique pages get no mutual edges at all.
- *
- * Union-find over pairs at or above `threshold`. Chaining is possible in
- * principle (a~b, b~c, a≁c) but at 0.97 the transitive slack is negligible.
- *
- * The clustering algorithm itself is untouched; it simply runs on the
- * representatives, and members are expanded back afterwards.
- */
-function collapseNearDuplicates(
-  matrix: Float32Array,
-  pages: Page[],
-  threshold: number
-): { groups: DuplicateGroup[]; repMatrix: Float32Array } {
-  const count = pages.length;
-  const parent = new Int32Array(count);
-  for (let i = 0; i < count; i++) parent[i] = i;
-
-  const find = (x: number): number => {
-    let root = x;
-    while (parent[root] !== root) root = parent[root]!;
-    while (parent[x] !== root) {
-      const next = parent[x]!;
-      parent[x] = root;
-      x = next;
-    }
-    return root;
-  };
-
-  for (let i = 0; i < count; i++) {
-    for (let j = i + 1; j < count; j++) {
-      if (dot(matrix, i, j) >= threshold) {
-        const rootI = find(i);
-        const rootJ = find(j);
-        if (rootI !== rootJ) parent[rootJ] = rootI;
-      }
-    }
-  }
-
-  const buckets = new Map<number, number[]>();
-  for (let i = 0; i < count; i++) {
-    const root = find(i);
-    const bucket = buckets.get(root);
-    if (bucket === undefined) buckets.set(root, [i]);
-    else bucket.push(i);
-  }
-
-  const groups: DuplicateGroup[] = [];
-  for (const members of buckets.values()) {
-    // The most-revisited member speaks for the group: §4 calls return visits
-    // the strongest relevance signal.
-    members.sort((a, b) => {
-      const byVisits = pages[b]!.visitCount - pages[a]!.visitCount;
-      return byVisits !== 0 ? byVisits : pages[b]!.title.length - pages[a]!.title.length;
-    });
-    groups.push({ representative: members[0]!, members });
-  }
-
-  // Deterministic order, so a rerun prints the same thing.
-  groups.sort((a, b) => a.representative - b.representative);
-
-  // A group's vector is its normalized centroid rather than the representative's
-  // own — members sit within 0.03 cosine of each other, so this is a marginal
-  // but free improvement in stability.
-  const repMatrix = new Float32Array(groups.length * DIM);
-  groups.forEach((group, position) => {
-    const centroid = centroidOf(matrix, group.members);
-    repMatrix.set(centroid, position * DIM);
-  });
-
-  return { groups, repMatrix };
-}
 
 // ---------------------------------------------------------------------------
 // Clustering
@@ -815,245 +275,7 @@ function similarityProfile(matrix: Float32Array, count: number): string {
   return `p50=${at(0.5)}  p90=${at(0.9)}  p99=${at(0.99)}  p99.9=${at(0.999)}  max=${at(1)}  (${target} sampled pairs)`;
 }
 
-/**
- * Shared-nearest-neighbour clustering (Jarvis–Patrick) over a mutual-kNN graph.
- *
- * Two pages are linked when each is in the other's top-k *and* they share at
- * least `sharedMin` neighbours. Both tests are rank-based, so this adapts to
- * however tightly or loosely a given user's browsing happens to embed rather
- * than depending on an absolute cosine cutoff — which measurement shows is
- * dataset-specific and sits far lower than intuition suggests.
- *
- * The shared-neighbour test is what stops chaining. Mutual-kNN alone will link
- * an accidental Kubernetes/sourdough pair and connected components then welds
- * two unrelated topics together permanently; requiring shared context breaks
- * exactly those bridges, because a genuine bridge pair has no mutual crowd.
- *
- * Components below `minClusterSize` fall out as noise: the discovery queue of
- * §5, not a failure.
- *
- * Chosen over HDBSCAN, which needs a dimensionality-reduction step to behave on
- * 384 dims and has no trustworthy JS implementation. See CLAUDE.md §14.
- */
-function clusterByMutualKnn(
-  matrix: Float32Array,
-  count: number,
-  k: number,
-  floor: number,
-  sharedMin: number,
-  minClusterSize: number,
-  quiet = false
-): { clusters: Cluster[]; noise: number[] } {
-  // Top-k per node, kept sorted descending by similarity. k is small, so
-  // insertion into a plain array beats a heap.
-  const topIndex: number[][] = Array.from({ length: count }, () => []);
-  const topSim: number[][] = Array.from({ length: count }, () => []);
 
-  const offer = (node: number, other: number, sim: number): void => {
-    const sims = topSim[node]!;
-    if (sims.length === k && sim <= sims[k - 1]!) return;
-    const indices = topIndex[node]!;
-    let position = sims.length;
-    while (position > 0 && sims[position - 1]! < sim) position--;
-    sims.splice(position, 0, sim);
-    indices.splice(position, 0, other);
-    if (sims.length > k) {
-      sims.pop();
-      indices.pop();
-    }
-  };
-
-  for (let i = 0; i < count; i++) {
-    for (let j = i + 1; j < count; j++) {
-      const sim = dot(matrix, i, j);
-      if (sim < floor) continue;
-      offer(i, j, sim);
-      offer(j, i, sim);
-    }
-  }
-
-  // Union-find over mutual edges only.
-  const parent = new Int32Array(count);
-  for (let i = 0; i < count; i++) parent[i] = i;
-  const find = (x: number): number => {
-    let root = x;
-    while (parent[root] !== root) root = parent[root]!;
-    while (parent[x] !== root) {
-      const next = parent[x]!;
-      parent[x] = root;
-      x = next;
-    }
-    return root;
-  };
-  const union = (a: number, b: number): void => {
-    const rootA = find(a);
-    const rootB = find(b);
-    if (rootA !== rootB) parent[rootB] = rootA;
-  };
-
-  const neighbourSets = topIndex.map((list) => new Set(list));
-  const sharedNeighbours = (a: number, b: number): number => {
-    const setB = neighbourSets[b]!;
-    let shared = 0;
-    for (const n of topIndex[a]!) if (n !== b && setB.has(n)) shared++;
-    return shared;
-  };
-
-  let mutualEdges = 0;
-  let bridgesCut = 0;
-  for (let i = 0; i < count; i++) {
-    for (const j of topIndex[i]!) {
-      if (j <= i || !neighbourSets[j]!.has(i)) continue;
-      if (sharedNeighbours(i, j) < sharedMin) {
-        bridgesCut++;
-        continue;
-      }
-      union(i, j);
-      mutualEdges++;
-    }
-  }
-
-  const components = new Map<number, number[]>();
-  for (let i = 0; i < count; i++) {
-    const root = find(i);
-    const bucket = components.get(root);
-    if (bucket === undefined) components.set(root, [i]);
-    else bucket.push(i);
-  }
-
-  const clusters: Cluster[] = [];
-  const noise: number[] = [];
-  for (const members of components.values()) {
-    if (members.length < minClusterSize) noise.push(...members);
-    else clusters.push(describeCluster(matrix, members));
-  }
-
-  clusters.sort((a, b) => b.members.length - a.members.length);
-  noise.sort((a, b) => a - b);
-  if (!quiet) {
-    console.log(
-      `  graph: ${mutualEdges} edges kept, ${bridgesCut} bridges cut by the shared-neighbour test, ${components.size} components`
-    );
-  }
-  return { clusters, noise };
-}
-
-/**
- * The sweep runs the same clustering ~92 times. Recomputing every pairwise dot
- * product each run would be 92 O(n²) passes, so the neighbour lists are built
- * once at the largest k in the grid and every combination is derived from them.
- *
- * This is exact rather than approximate. `clusterByMutualKnn` applies its floor
- * before selecting top-k, so its list is the k highest neighbours at or above
- * the floor. Slicing a floor-free top-`maxK` list by the same floor and
- * truncating to k yields that identical set, provided k ≤ maxK. Verified
- * against the original in `assertCacheMatchesReference` rather than assumed.
- */
-interface NeighbourCache {
-  topIndex: number[][];
-  topSim: number[][];
-}
-
-function buildNeighbourCache(matrix: Float32Array, count: number, maxK: number): NeighbourCache {
-  const topIndex: number[][] = Array.from({ length: count }, () => []);
-  const topSim: number[][] = Array.from({ length: count }, () => []);
-
-  // Insertion identical to clusterByMutualKnn's `offer`, including tie handling.
-  const offer = (node: number, other: number, sim: number): void => {
-    const sims = topSim[node]!;
-    if (sims.length === maxK && sim <= sims[maxK - 1]!) return;
-    const indices = topIndex[node]!;
-    let position = sims.length;
-    while (position > 0 && sims[position - 1]! < sim) position--;
-    sims.splice(position, 0, sim);
-    indices.splice(position, 0, other);
-    if (sims.length > maxK) {
-      sims.pop();
-      indices.pop();
-    }
-  };
-
-  for (let i = 0; i < count; i++) {
-    for (let j = i + 1; j < count; j++) {
-      const sim = dot(matrix, i, j);
-      offer(i, j, sim);
-      offer(j, i, sim);
-    }
-  }
-  return { topIndex, topSim };
-}
-
-/**
- * Same mutual-kNN + shared-neighbour rule as `clusterByMutualKnn`, reading the
- * cache instead of the matrix. Returns raw components; the sweep only needs
- * sizes, so no centroids are computed.
- */
-function componentsFromCache(
-  cache: NeighbourCache,
-  count: number,
-  k: number,
-  floor: number,
-  sharedMin: number,
-  minClusterSize: number
-): { components: number[][]; noise: number[] } {
-  const topIndex: number[][] = [];
-  const neighbourSets: Array<Set<number>> = [];
-  for (let i = 0; i < count; i++) {
-    const sims = cache.topSim[i]!;
-    const indices = cache.topIndex[i]!;
-    const list: number[] = [];
-    for (let position = 0; position < indices.length && list.length < k; position++) {
-      if (sims[position]! < floor) break; // sorted descending
-      list.push(indices[position]!);
-    }
-    topIndex.push(list);
-    neighbourSets.push(new Set(list));
-  }
-
-  const parent = new Int32Array(count);
-  for (let i = 0; i < count; i++) parent[i] = i;
-  const find = (x: number): number => {
-    let root = x;
-    while (parent[root] !== root) root = parent[root]!;
-    while (parent[x] !== root) {
-      const next = parent[x]!;
-      parent[x] = root;
-      x = next;
-    }
-    return root;
-  };
-
-  for (let i = 0; i < count; i++) {
-    for (const j of topIndex[i]!) {
-      if (j <= i || !neighbourSets[j]!.has(i)) continue;
-      let shared = 0;
-      const setJ = neighbourSets[j]!;
-      for (const n of topIndex[i]!) if (n !== j && setJ.has(n)) shared++;
-      if (shared < sharedMin) continue;
-      const rootI = find(i);
-      const rootJ = find(j);
-      if (rootI !== rootJ) parent[rootJ] = rootI;
-    }
-  }
-
-  const buckets = new Map<number, number[]>();
-  for (let i = 0; i < count; i++) {
-    const root = find(i);
-    const bucket = buckets.get(root);
-    if (bucket === undefined) buckets.set(root, [i]);
-    else bucket.push(i);
-  }
-
-  const components: number[][] = [];
-  const noise: number[] = [];
-  for (const members of buckets.values()) {
-    if (members.length < minClusterSize) noise.push(...members);
-    else components.push(members);
-  }
-  components.sort((a, b) => b.length - a.length);
-  noise.sort((a, b) => a - b);
-  return { components, noise };
-}
 
 /** Proves the cache path reproduces the untouched original exactly. */
 function assertCacheMatchesReference(
@@ -1063,8 +285,9 @@ function assertCacheMatchesReference(
   combos: Array<[number, number, number]>
 ): void {
   for (const [k, shared, floor] of combos) {
-    const reference = clusterByMutualKnn(matrix, count, k, floor, shared, OPTS.minClusterSize, true);
-    const fast = componentsFromCache(cache, count, k, floor, shared, OPTS.minClusterSize);
+    const options = { k, sharedMin: shared, minSim: floor, minClusterSize: OPTS.minClusterSize };
+    const reference = clusterByMutualKnn(matrix, count, options);
+    const fast = componentsFromCache(cache, count, options);
     const referenceShape = reference.clusters.map((c) => [...c.members].sort((a, b) => a - b).join(',')).sort();
     const fastShape = fast.components.map((c) => [...c].sort((a, b) => a - b).join(',')).sort();
     if (referenceShape.join('|') !== fastShape.join('|') || reference.noise.join(',') !== fast.noise.join(',')) {
@@ -1260,11 +483,6 @@ function topDomains(pages: Page[], members: number[], limit = 3): string {
 }
 
 /** Group indices -> every page they stand for. */
-function expandGroups(groups: DuplicateGroup[], groupIndices: number[]): number[] {
-  const pageIndices: number[] = [];
-  for (const groupIndex of groupIndices) pageIndices.push(...groups[groupIndex]!.members);
-  return pageIndices;
-}
 
 function printClusters(
   pages: Page[],
@@ -1367,7 +585,12 @@ function printSweep(repMatrix: Float32Array, groups: DuplicateGroup[], totalPage
     for (const k of kValues) {
       for (const shared of sharedValues) {
         if (shared >= k) continue;
-        const { components, noise } = componentsFromCache(cache, nodes, k, minSim, shared, OPTS.minClusterSize);
+        const { components, noise } = componentsFromCache(cache, nodes, {
+          k,
+          sharedMin: shared,
+          minSim,
+          minClusterSize: OPTS.minClusterSize,
+        });
         const sizes = components.map((members) => expandGroups(groups, members).length).sort((a, b) => a - b);
         const noisePct = (expandGroups(groups, noise).length / totalPages) * 100;
         const medianSize = sizes.length === 0 ? 0 : sizes[Math.floor(sizes.length / 2)]!;
@@ -1485,8 +708,13 @@ async function main(): Promise<void> {
 
   // 2. Filter
   mark = performance.now();
-  let { pages, stats } = filterHistory(visits, perVisit);
+  const filtered = filterHistory(visits, perVisit, { stripSuffixes: OPTS.stripSuffixes });
+  let { pages } = filtered;
+  const { stats, boilerplate, junkDropped } = filtered;
   timings.push(['filter', performance.now() - mark]);
+  // Printed here rather than inside filterHistory: src/lib must stay silent so
+  // it can run in the offscreen document.
+  reportBoilerplate(boilerplate);
   printFilterReport(stats, shape);
 
   if (OPTS.listJunk) {
@@ -1562,13 +790,27 @@ async function main(): Promise<void> {
   console.log(`  clustering: ${settings}`);
 
   mark = performance.now();
-  const result =
-    OPTS.algo === 'kmeans'
-      ? clusterByKMeans(repMatrix, groups.length, k, OPTS.minSim, OPTS.minClusterSize, OPTS.seed)
-      : OPTS.algo === 'community'
-        ? clusterByCommunity(repMatrix, groups.length, OPTS.threshold, OPTS.minClusterSize)
-        : clusterByMutualKnn(repMatrix, groups.length, OPTS.knn, OPTS.minSim, OPTS.shared, OPTS.minClusterSize);
+  let graphLine: string | null = null;
+  let result: { clusters: Cluster[]; noise: number[] };
+
+  if (OPTS.algo === 'kmeans') {
+    result = clusterByKMeans(repMatrix, groups.length, k, OPTS.minSim, OPTS.minClusterSize, OPTS.seed);
+  } else if (OPTS.algo === 'community') {
+    result = clusterByCommunity(repMatrix, groups.length, OPTS.threshold, OPTS.minClusterSize);
+  } else {
+    const knn = clusterByMutualKnn(repMatrix, groups.length, {
+      k: OPTS.knn,
+      sharedMin: OPTS.shared,
+      minSim: OPTS.minSim,
+      minClusterSize: OPTS.minClusterSize,
+    });
+    result = knn;
+    // These counts used to be logged from inside the clustering function.
+    // src/lib prints nothing, so the CLI reports them instead.
+    graphLine = `  graph: ${knn.mutualEdges} edges kept, ${knn.bridgesCut} bridges cut by the shared-neighbour test, ${knn.components} components`;
+  }
   timings.push(['cluster', performance.now() - mark]);
+  if (graphLine !== null) console.log(graphLine);
 
   // 6. Report — members expanded back out of their representatives.
   printClusters(pages, groups, result.clusters, result.noise);
