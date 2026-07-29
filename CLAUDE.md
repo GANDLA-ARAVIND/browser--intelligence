@@ -290,6 +290,13 @@ the shared-machine problem tractable.
   sensitive-category blocklist (banking, health, email, adult, internal
   corporate tools). Exclude *before* extraction — never embed them.
 - **Encryption at rest** for stored content.
+- **No unencrypted copy of user history may be written outside the project
+  directory** — never to `os.tmpdir()`, `%TEMP%`, `/tmp`, or any other shared
+  location, which on a multi-user machine is world-readable and outlives the
+  process. Any scratch copy goes in the gitignored `./.scratch/` and must be
+  swept on **both startup and exit**, including crash and signal paths. This
+  applies to tooling and scripts, not just the extension: a debug artifact
+  leaks exactly the same data as a shipped feature.
 - **Pause toggle** in the toolbar popup: 30 min / 1 hr / until re-enabled.
 - **Retroactive removal:** select a time range or session → "this wasn't me"
   → delete and re-cluster. This is the control people actually use, because
@@ -456,6 +463,11 @@ Append new decisions here with a one-line rationale.
 | `scripts/export-history.mjs` reads Chrome's local SQLite | Takeout takes hours and drops `visitCount`; `node:sqlite` is built in, so this stays zero-dependency and fully local |
 | §5's ~0.40 zero-shot threshold is unverified | Title↔title similarity measures far below 0.40. Title↔label is a different distribution, but the 0.40 figure must be measured before Phase 3 depends on it |
 | Cluster output displays the original title, embeds the stripped one | react.dev titles every page "… – React", so the suffix stripper removes the one word that identifies the cluster. Measured: stripping costs 0.33 of within-group similarity and 63% of the topic/unrelated gap. Clustering still works; a human reading the output could not tell what the cluster was, which defeats the §11 exit criterion |
+| An absolute similarity *floor* is the same transferability bug as an absolute clustering *threshold* | `--min-sim` was a fixed 0.20 sitting on the measured within-topic median of 0.194 — the exact failure the rank-based decision above was taken to avoid, reintroduced under a different parameter name. Swept, and on real history it proved **inert**: results are byte-identical across 0.05–0.20 because every node's top-15 neighbours already exceed 0.20. Harmless here, wrong in kind, and it would bite on a sparser corpus |
+| Audit of remaining absolute similarity constants | `--min-sim` 0.20 (inert, above); `--threshold` 0.35 (`--algo community` only, a comparison arm); `--dup-threshold` 0.97 (**defensible** — it detects near-*identity*, not topical relatedness: duplicates sit at ~1.0 against a measured cross-topic max of 0.44, so the margin is enormous and scale-stable). §5's 0.40 zero-shot threshold remains unverified. Frequency rules are already scale-relative (`max(5, 0.3%)`) and need no change |
+| Junk titles (auth walls, bot checks, error pages) are dropped before embedding | They carry no topic, recur in the hundreds under many distinct URLs so the normalized-URL dedupe never sees them, and once embedded they form dense identical neighbourhoods. Most are auth pages that §9 forbids capturing at all |
+| Junk prefix patterns apply only to titles under 40 chars | An interstitial announces itself in a few words. `/^error/` alone eats "Error handling with Result and the question mark operator", a real Rust doc page — length is what separates the two |
+| Near-duplicate pages collapse to one weighted node before clustering | LeetCode serves `/problems/two-sum/`, `/description/` and `/submissions/` under one title, so URL dedupe misses them. Twenty copies saturate a page's k nearest neighbours with itself: no related page can link, every problem becomes its own cluster, and unique pages get no mutual edges at all. Measured on real history: 553 clusters, 41% noise, four separate "Sign in" clusters |
 | int8 batch-shape drift accepted, not engineered around | A title's vector shifts ~0.993 cosine when its batch has a different padded sequence width. fp32 shows none, so mean pooling masks padding correctly. Padding short batches to 32 rows does not help — width, not row count, is the driver — and top-6 neighbour rank is 100% stable across regroupings, so nothing mutual-kNN reads is affected |
 
 ---

@@ -5,6 +5,11 @@ build/
 # Model weights, downloaded on first run (~23MB quantized MiniLM)
 .models/
 
+# Scratch copies of the browser history DB. Kept inside the project rather than
+# the OS temp folder (CLAUDE.md §9) and swept on startup and exit — but never
+# commit one if a sweep is ever missed.
+.scratch/
+
 # PERSONAL DATA — never commit. This is a raw dump of the developer's
 # browsing history and is the exact thing this project promises never leaves
 # the machine (CLAUDE.md §2.1).
