@@ -99,11 +99,54 @@ export const JUNK_TITLE_PREFIX: RegExp[] = [
 /** Above this length a title is descriptive enough to be real content. */
 export const JUNK_PREFIX_MAX_LENGTH = 40;
 
+/** Below this, a spaceless string is short enough that the length filter handles it. */
+const BARE_URL_MIN_LENGTH = 30;
+
+/** Printable ASCII with no whitespace anywhere. */
+const NO_WHITESPACE_ASCII = /^[!-~]+$/;
+
+/**
+ * A title that is really just a URL.
+ *
+ * Chrome falls back to the URL when a page serves no `<title>`, so these are
+ * pages with no title at all — no title means no topic, the same rationale as
+ * every other tier here.
+ *
+ * They also cost disproportionately: a URL tokenizes into hundreds of
+ * wordpieces, and since every title in a batch pads to the longest one, a
+ * single 875-token URL made its batch 30× the median cost. Measured r = 0.992
+ * between padded width and batch duration.
+ *
+ * The ASCII requirement is load-bearing and not cosmetic. Chinese, Japanese and
+ * Thai titles legitimately contain no whitespace, and a rule keyed on
+ * "no spaces" alone would delete them wholesale — the same class of bug as the
+ * ASCII-only `\W` that once ate every Telugu title.
+ */
+/** `host.tld/…` — a dotted host followed by a path. */
+const HOST_WITH_PATH = /^(https?:\/\/)?[a-z0-9-]+(\.[a-z0-9-]+)+\//i;
+/** Query-string and percent-encoding punctuation. */
+const URL_QUERY = /[?&=%]/;
+/** A content-hash filename: `b100e504478166a8308fc52412ef279f.pdf`. */
+const HASH_FILENAME = /^[a-f0-9]{16,}\.[a-z0-9]{2,5}$/i;
+
+export function isBareUrlTitle(title: string): boolean {
+  if (title.length < BARE_URL_MIN_LENGTH) return false;
+  if (!NO_WHITESPACE_ASCII.test(title)) return false;
+
+  // A slash alone is not enough. GitHub titles pages "owner/repo", which is
+  // spaceless ASCII containing a slash but is one of the most informative
+  // titles in the corpus — "GANDLA-ARAVIND/WATT-WISE-PROJECT" names a real
+  // project. Requiring a *dotted host* before the slash separates a URL from a
+  // repository path.
+  return HOST_WITH_PATH.test(title) || URL_QUERY.test(title) || HASH_FILENAME.test(title);
+}
+
 export function isJunkTitle(title: string): boolean {
   const candidate = title.trim();
   if (candidate.length === 0) return true;
   if (JUNK_TITLE_EXACT.some((pattern) => pattern.test(candidate))) return true;
   if (JUNK_TITLE_STRONG.some((pattern) => pattern.test(candidate))) return true;
+  if (isBareUrlTitle(candidate)) return true;
   if (candidate.length > JUNK_PREFIX_MAX_LENGTH) return false;
   return JUNK_TITLE_PREFIX.some((pattern) => pattern.test(candidate));
 }

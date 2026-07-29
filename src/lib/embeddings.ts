@@ -17,6 +17,21 @@ export const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 export const EMBEDDING_BATCH_SIZE = 32;
 export { EMBEDDING_DIM };
 
+/**
+ * Hard cap on tokens per title.
+ *
+ * Every title in a batch pads to the longest one, so cost is linear in the
+ * batch's padded width — measured r = 0.992 between width and batch duration.
+ * A single 875-token title (a URL Chrome used as a fallback title) made its
+ * batch 30× the median. Titles are median 10 tokens and p99 36, so 64 leaves
+ * 99.8% of them untouched while removing the tail entirely.
+ *
+ * This must be enforced at the *token* level. A word-level cap looked perfect
+ * in testing — cosine 1.0000 on the worst offenders — because those titles are
+ * single unbroken URLs with no whitespace, so it cut nothing at all.
+ */
+export const EMBEDDING_MAX_TOKENS = 64;
+
 export interface EmbedderOptions {
   /** Node only: where to cache model weights. Ignored in the browser. */
   cacheDir?: string;
@@ -73,6 +88,11 @@ export async function createEmbedder(options: EmbedderOptions = {}): Promise<Emb
   const extractor = await pipeline('feature-extraction', EMBEDDING_MODEL, {
     quantized: options.quantized ?? true,
   });
+
+  // The feature-extraction pipeline tokenizes with `{ padding: true,
+  // truncation: true }` and takes its limit from the tokenizer, which defaults
+  // to the model's 512. Lowering it here caps the padded width of every batch.
+  extractor.tokenizer.model_max_length = EMBEDDING_MAX_TOKENS;
 
   // Fail at init, not at query time. Every downstream assumption — the 0.97
   // duplicate threshold, the measured 0.194/0.021 topic separation, every
