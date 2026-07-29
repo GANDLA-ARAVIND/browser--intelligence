@@ -17,5 +17,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["scripts/**/*.ts", "src/**/*.ts"]
+  "//": "Node-side tooling only (scripts/). Extension code lives under tsconfig.app.json — see the note there.",
+  "include": ["scripts/**/*.ts"]
 }

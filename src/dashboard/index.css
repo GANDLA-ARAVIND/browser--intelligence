@@ -1,0 +1,149 @@
+:root {
+  --bg: #ffffff;
+  --fg: #16181d;
+  --muted: #5f6570;
+  --line: #e3e6ea;
+  --panel: #f7f8fa;
+  --ok: #1a7f4b;
+  --fail: #b4342b;
+  --pending: #8a9099;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #e8eaed;
+    --muted: #9aa1ab;
+    --line: #2a2e35;
+    --panel: #1c1f25;
+    --ok: #4ac585;
+    --fail: #ef7f75;
+    --pending: #767d87;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+}
+
+.tagline {
+  margin: 0.4rem 0 2.5rem;
+  color: var(--muted);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.probes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.probes li {
+  display: grid;
+  grid-template-columns: auto 11rem 1fr;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pending);
+}
+
+li[data-state="ok"] .dot {
+  background: var(--ok);
+}
+
+li[data-state="fail"] .dot {
+  background: var(--fail);
+}
+
+.detail {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-top: 1.15rem;
+  padding-top: 1.05rem;
+  border-top: 1px solid var(--line);
+}
+
+.actions button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.85rem;
+  cursor: pointer;
+}
+
+.actions button:hover {
+  border-color: var(--muted);
+}
+
+.stack {
+  margin: 0 0 0.75rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.muted-stack {
+  color: var(--muted);
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.note {
+  margin-top: 2rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
