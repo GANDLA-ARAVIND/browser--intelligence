@@ -109,8 +109,14 @@ function handle(message: Message): Promise<Response> | Response | undefined {
         error: error instanceof Error ? error.message : String(error),
       }));
 
-    // Pure proxy. Progress lives in the offscreen document, which outlives this
-    // worker — anything cached here would be a lie the moment it sleeps (§14).
+    // Pure proxies. The offscreen document owns both the progress state and the
+    // search index; the worker only routes (§3), because it is torn down after
+    // ~30s idle and cannot hold either (§14).
+    case 'SEARCH':
+      return ensureOffscreenDocument()
+        .then(() => sendMessage({ target: 'offscreen', type: 'SEARCH', query: message.query, limit: message.limit }))
+        .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
+
     case 'GET_BACKFILL_PROGRESS':
       return ensureOffscreenDocument()
         .then(() => sendMessage({ target: 'offscreen', type: 'GET_BACKFILL_PROGRESS' }))

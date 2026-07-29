@@ -65,9 +65,18 @@ export function startBlockingMonitor(options: BlockingMonitorOptions = {}): Bloc
   const transitions: Transition[] = [{ stage: 'startup', at: performance.now() }];
   let last = performance.now();
 
-  /** Which stage occupied most of [from, to]. */
-  const attribute = (from: number, to: number): string => {
-    let best = transitions[0]!.stage;
+  /**
+   * Which stage occupied most of [from, to], and when *that occurrence* of it
+   * began.
+   *
+   * Returning the segment start rather than looking the stage up by name
+   * afterwards is what keeps the offset honest. A gap almost always straddles
+   * the boundary — the tick before a long block fires a few ms before the stage
+   * switches — so a name lookup can return an earlier occurrence and yield a
+   * negative offset, which is not a thing that can happen.
+   */
+  const attribute = (from: number, to: number): { stage: string; segmentStart: number } => {
+    let best = transitions[0]!;
     let bestOverlap = -1;
     for (let i = 0; i < transitions.length; i++) {
       const start = transitions[i]!.at;
@@ -75,30 +84,24 @@ export function startBlockingMonitor(options: BlockingMonitorOptions = {}): Bloc
       const overlap = Math.min(to, end) - Math.max(from, start);
       if (overlap > bestOverlap) {
         bestOverlap = overlap;
-        best = transitions[i]!.stage;
+        best = transitions[i]!;
       }
     }
-    return best;
-  };
-
-  /** When the attributed stage began, so offsets are relative to it. */
-  const stageStart = (stage: string): number => {
-    for (const transition of transitions) {
-      if (transition.stage === stage) return transition.at;
-    }
-    return transitions[0]!.at;
+    return { stage: best.stage, segmentStart: best.at };
   };
 
   const tick = (): void => {
     const now = performance.now();
     const late = now - last - tickMs;
     if (late >= thresholdMs) {
-      const stage = attribute(last, now);
+      const { stage, segmentStart } = attribute(last, now);
       found.push({
         stage,
         ms: Math.round(late),
         at: Date.now(),
-        sinceStageStartMs: Math.round(last - stageStart(stage)),
+        // Clamped: a gap that starts a few ms before the boundary belongs to
+        // the stage that owns almost all of it, at offset zero.
+        sinceStageStartMs: Math.max(0, Math.round(last - segmentStart)),
       });
     }
     last = now;

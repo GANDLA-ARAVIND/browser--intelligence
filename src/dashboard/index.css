@@ -254,6 +254,42 @@ li[data-state="fail"] .dot {
   font-size: 0.8125rem;
 }
 
+.search-input {
+  flex: 1;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  min-width: 12rem;
+}
+
+.hits {
+  margin: 0.75rem 0 0;
+  padding-left: 1.6rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.hits li {
+  display: grid;
+  grid-template-columns: 3.4rem 1fr;
+  gap: 0.1rem 0.6rem;
+}
+
+.hit-score {
+  grid-row: span 2;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  padding-top: 0.12rem;
+}
+
+.hit-title {
+  overflow-wrap: anywhere;
+}
+
 .settings-intro {
   margin: 0 0 1rem;
 }

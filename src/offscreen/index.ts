@@ -11,6 +11,7 @@
  */
 
 import { idleProgress, runBackfill, type BackfillProgress } from '../lib/backfill.js';
+import { invalidateSearchIndex, search } from './searchIndex.js';
 import { onMessage, resourceUrl } from '../platform/browser.js';
 import type { Message, Response } from '../platform/messages.js';
 
@@ -28,7 +29,7 @@ function setStatusLine(): void {
       : `${progress.stage} — ${progress.done}/${progress.total} — ${progress.detail}`;
 }
 
-function handle(message: Message): Response | undefined {
+function handle(message: Message): Promise<Response> | Response | undefined {
   switch (message.type) {
     case 'PING':
       console.log(`[offscreen] ping from ${message.from}`);
@@ -36,6 +37,12 @@ function handle(message: Message): Response | undefined {
 
     case 'GET_BACKFILL_PROGRESS':
       return { ok: true, progress };
+
+    case 'SEARCH':
+      return search(message.query, message.limit).catch((error: unknown) => ({
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      }));
 
     case 'RUN_BACKFILL': {
       if (running) return { ok: true, accepted: false, reason: 'a backfill is already running' };
@@ -63,6 +70,8 @@ function handle(message: Message): Response | undefined {
       })
         .then((summary) => {
           console.log('[offscreen] backfill complete', summary);
+          // The index is a snapshot; new pages mean it is stale.
+          invalidateSearchIndex();
         })
         .catch((error: unknown) => {
           console.error('[offscreen] backfill failed', error);

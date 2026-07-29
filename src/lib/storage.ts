@@ -166,6 +166,11 @@ export async function getAllPages(db: IDBDatabase): Promise<PageRecord[]> {
   return promisify(tx.objectStore(STORE_PAGES).getAll() as IDBRequest<PageRecord[]>);
 }
 
+export async function getAllGroups(db: IDBDatabase): Promise<GroupRecord[]> {
+  const tx = db.transaction(STORE_GROUPS, 'readonly');
+  return promisify(tx.objectStore(STORE_GROUPS).getAll() as IDBRequest<GroupRecord[]>);
+}
+
 export async function putMeta<T extends { key: string }>(db: IDBDatabase, value: T): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_META, 'readwrite');

@@ -28,7 +28,11 @@ export type Message =
   // Settings travel with the job: offscreen documents are restricted to
   // chrome.runtime, so they cannot read chrome.storage themselves.
   | { target: 'offscreen'; type: 'RUN_BACKFILL'; visits: RawVisit[]; blockedCategories: SensitiveCategory[] }
-  | { target: 'offscreen'; type: 'GET_BACKFILL_PROGRESS' };
+  | { target: 'offscreen'; type: 'GET_BACKFILL_PROGRESS' }
+  // Search. Runs in the offscreen document, never the dashboard: §14 records
+  // that context isolation is what kept the UI alive while a thread blocked.
+  | { target: 'background'; type: 'SEARCH'; query: string; limit: number }
+  | { target: 'offscreen'; type: 'SEARCH'; query: string; limit: number };
 
 export interface PongResponse {
   ok: true;
@@ -57,6 +61,24 @@ export interface AcceptedResponse {
   reason?: string;
 }
 
+export interface SearchHit {
+  id: string;
+  title: string;
+  domain: string;
+  score: number;
+  lastVisit: number;
+  /** How many near-identical pages this node stands for. */
+  collapsed: number;
+}
+
+export interface SearchResponse {
+  ok: true;
+  hits: SearchHit[];
+  /** Unique nodes scanned. */
+  scanned: number;
+  timings: { loadMs: number; embedMs: number; scanMs: number; totalMs: number };
+}
+
 export interface ProgressResponse {
   ok: true;
   progress: BackfillProgress;
@@ -64,7 +86,13 @@ export interface ProgressResponse {
 
 export type ErrorResponse = { ok: false; error: string };
 
-export type Response = PongResponse | StatusResponse | AcceptedResponse | ProgressResponse | ErrorResponse;
+export type Response =
+  | PongResponse
+  | StatusResponse
+  | AcceptedResponse
+  | ProgressResponse
+  | SearchResponse
+  | ErrorResponse;
 
 /**
  * Which reply belongs to which request. `sendMessage` uses this to type its
@@ -78,6 +106,7 @@ export interface ReplyMap {
   START_BACKFILL: AcceptedResponse;
   RUN_BACKFILL: AcceptedResponse;
   GET_BACKFILL_PROGRESS: ProgressResponse;
+  SEARCH: SearchResponse;
 }
 
 export type ReplyFor<M extends Message> = ReplyMap[M['type']];
@@ -112,10 +141,15 @@ export function isProgressResponse(value: unknown): value is ProgressResponse {
   return isRecord(progress) && typeof progress['stage'] === 'string' && isRecord(progress['counts']);
 }
 
+export function isSearchResponse(value: unknown): value is SearchResponse {
+  return isRecord(value) && value['ok'] === true && Array.isArray(value['hits']) && isRecord(value['timings']);
+}
+
 export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean } = {
   PING: isPongResponse,
   GET_STATUS: isStatusResponse,
   START_BACKFILL: isAcceptedResponse,
   RUN_BACKFILL: isAcceptedResponse,
   GET_BACKFILL_PROGRESS: isProgressResponse,
+  SEARCH: isSearchResponse,
 };

@@ -233,13 +233,13 @@ function BlockingReport({ summary }: { summary: BackfillSummary }): React.JSX.El
           ))}
         </tbody>
       </table>
+      {/* Offset only. Any interpretation baked in here is written for one
+          stage and wrong for the next — "deferred initialisation" made no
+          sense for a pure-JS loop with nothing to initialise. */}
       {worst !== null && worst.sinceStageStartMs !== undefined && (
         <p className="detail">
-          Worst stall began {formatMs(worst.sinceStageStartMs)} into{' '}
-          <strong>{worst.stage}</strong>
-          {worst.sinceStageStartMs < 2000
-            ? ' — at the very start, which is the signature of deferred initialisation.'
-            : ' — not at the start, so not deferred initialisation.'}
+          Worst stall: {formatMs(worst.ms)}, beginning {formatMs(worst.sinceStageStartMs)} into{' '}
+          <strong>{worst.stage}</strong>.
         </p>
       )}
     </>
