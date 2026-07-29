@@ -1,0 +1,21 @@
+{
+  "name": "browser-intelligence",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first browsing-history knowledge base. Phase 0: validation harness.",
+  "scripts": {
+    "validate": "tsx scripts/validate.ts",
+    "sanity": "tsx scripts/sanity.ts",
+    "export-history": "node --no-warnings scripts/export-history.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
+  }
+}

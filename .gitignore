@@ -1,0 +1,21 @@
+node_modules/
+dist/
+build/
+
+# Model weights, downloaded on first run (~23MB quantized MiniLM)
+.models/
+
+# PERSONAL DATA — never commit. This is a raw dump of the developer's
+# browsing history and is the exact thing this project promises never leaves
+# the machine (CLAUDE.md §2.1).
+history-export.json
+history-export.*.json
+clusters.json
+*.sqlite
+*.sqlite-journal
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

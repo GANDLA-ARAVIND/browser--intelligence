@@ -1,0 +1,14 @@
+New-Item -ItemType Directory -Force -Path ".claude" | Out-Null
+Set-Content -Path ".claude\settings.json" -Encoding ascii -Value @'
+{
+  "permissions": {
+    "deny": [
+      "Bash(git *)",
+      "Bash(git)",
+      "Bash(gh *)",
+      "Bash(*git commit*)",
+      "Bash(*git push*)"
+    ]
+  }
+}
+'@
