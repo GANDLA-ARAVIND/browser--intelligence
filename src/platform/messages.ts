@@ -13,6 +13,7 @@
 
 import type { BackfillProgress } from '../lib/backfill.js';
 import type { SensitiveCategory } from '../lib/blocklist.js';
+import type { CapturedPage } from '../lib/capture.js';
 import type { RawVisit } from '../lib/types.js';
 
 export type Context = 'background' | 'offscreen' | 'dashboard' | 'content';
@@ -32,7 +33,10 @@ export type Message =
   // Search. Runs in the offscreen document, never the dashboard: §14 records
   // that context isolation is what kept the UI alive while a thread blocked.
   | { target: 'background'; type: 'SEARCH'; query: string; limit: number }
-  | { target: 'offscreen'; type: 'SEARCH'; query: string; limit: number };
+  | { target: 'offscreen'; type: 'SEARCH'; query: string; limit: number }
+  // Live capture. The content script never embeds — it extracts and hands off.
+  | { target: 'background'; type: 'CAPTURE_PAGE'; page: CapturedPage }
+  | { target: 'offscreen'; type: 'DRAIN_QUEUE' };
 
 export interface PongResponse {
   ok: true;
@@ -79,6 +83,12 @@ export interface SearchResponse {
   timings: { loadMs: number; embedMs: number; scanMs: number; totalMs: number };
 }
 
+export interface DrainResponse {
+  ok: true;
+  processed: number;
+  remaining: number;
+}
+
 export interface ProgressResponse {
   ok: true;
   progress: BackfillProgress;
@@ -92,6 +102,7 @@ export type Response =
   | AcceptedResponse
   | ProgressResponse
   | SearchResponse
+  | DrainResponse
   | ErrorResponse;
 
 /**
@@ -107,6 +118,8 @@ export interface ReplyMap {
   RUN_BACKFILL: AcceptedResponse;
   GET_BACKFILL_PROGRESS: ProgressResponse;
   SEARCH: SearchResponse;
+  CAPTURE_PAGE: AcceptedResponse;
+  DRAIN_QUEUE: DrainResponse;
 }
 
 export type ReplyFor<M extends Message> = ReplyMap[M['type']];
@@ -145,6 +158,10 @@ export function isSearchResponse(value: unknown): value is SearchResponse {
   return isRecord(value) && value['ok'] === true && Array.isArray(value['hits']) && isRecord(value['timings']);
 }
 
+export function isDrainResponse(value: unknown): value is DrainResponse {
+  return isRecord(value) && value['ok'] === true && typeof value['processed'] === 'number';
+}
+
 export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean } = {
   PING: isPongResponse,
   GET_STATUS: isStatusResponse,
@@ -152,4 +169,6 @@ export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean
   RUN_BACKFILL: isAcceptedResponse,
   GET_BACKFILL_PROGRESS: isProgressResponse,
   SEARCH: isSearchResponse,
+  CAPTURE_PAGE: isAcceptedResponse,
+  DRAIN_QUEUE: isDrainResponse,
 };

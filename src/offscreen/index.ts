@@ -11,6 +11,7 @@
  */
 
 import { idleProgress, runBackfill, type BackfillProgress } from '../lib/backfill.js';
+import { drainQueue } from './drain.js';
 import { invalidateSearchIndex, search } from './searchIndex.js';
 import { onMessage, resourceUrl } from '../platform/browser.js';
 import type { Message, Response } from '../platform/messages.js';
@@ -37,6 +38,14 @@ function handle(message: Message): Promise<Response> | Response | undefined {
 
     case 'GET_BACKFILL_PROGRESS':
       return { ok: true, progress };
+
+    case 'DRAIN_QUEUE':
+      return drainQueue()
+        .then((result) => ({ ok: true as const, ...result }))
+        .catch((error: unknown) => ({
+          ok: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        }));
 
     case 'SEARCH':
       return search(message.query, message.limit).catch((error: unknown) => ({

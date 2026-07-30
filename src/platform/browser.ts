@@ -114,13 +114,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Returning a promise from `handler` keeps the response channel open, which is
  * the other easy mistake in this API: the listener must return literal `true`.
  */
+export interface MessageContext {
+  /** True when the sender is an incognito tab. §9 forbids capturing those, and
+   *  the page itself cannot be trusted to declare it — only the sender can. */
+  incognito: boolean;
+  tabId: number | undefined;
+  tabUrl: string | undefined;
+}
+
 export function onMessage(
   self: Context,
-  handler: (message: Message) => Promise<Response> | Response | undefined
+  handler: (message: Message, context: MessageContext) => Promise<Response> | Response | undefined
 ): void {
-  chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
     if (message?.target !== self) return false; // not addressed to us
-    const result = handler(message);
+    const context: MessageContext = {
+      incognito: sender.tab?.incognito ?? false,
+      tabId: sender.tab?.id,
+      tabUrl: sender.tab?.url,
+    };
+    const result = handler(message, context);
     if (result === undefined) return false;
     if (result instanceof Promise) {
       result.then(sendResponse).catch((error: unknown) => {

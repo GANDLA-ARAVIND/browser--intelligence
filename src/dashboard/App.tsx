@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Backfill } from './Backfill.js';
+import { Captures } from './Captures.js';
 import { PrivacySettings } from './PrivacySettings.js';
 import { Search } from './Search.js';
 import { sendMessage } from '../platform/browser.js';
@@ -94,12 +95,14 @@ export function App(): React.JSX.Element {
 
       <Search />
 
+      <Captures />
+
       <Backfill />
 
       <PrivacySettings />
 
       <p className="note">
-        Phase 1, step 4 — backfill and bare search. Search, the session timeline and topic
+        Phase 2, step 1 — live capture, backfill and bare search. Search, the session timeline and topic
         cards arrive in later phases. Everything runs on this machine; nothing
         is transmitted.
       </p>

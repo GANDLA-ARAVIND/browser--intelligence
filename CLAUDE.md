@@ -18,6 +18,17 @@ This is the standing spec. Read it at the start of every session.
   phase's exit criteria are met.
 - When a decision is made that isn't captured here, append it to §14
   (Decision Log) in the same commit.
+- **This file is the spec. [DECISIONS.md](DECISIONS.md) is the record.** Here:
+  what is true now and what you must do. There: why, and what was measured.
+  §14 holds only the binding rules; everything else moved.
+- **When a decision corrects an earlier section, update that section in the
+  same edit — and this applies across both files.** A DECISIONS.md row that
+  corrects a CLAUDE.md section still requires updating that section. A reader
+  going top-down must never hit stale guidance, and the record grows
+  monotonically, so an uncorrected section stays wrong forever while looking
+  authoritative.
+- New decisions go to DECISIONS.md. Promote a row into §14 only when it
+  constrains future work rather than explaining a past choice.
 
 ---
 
@@ -50,7 +61,7 @@ impresses on install.** When they conflict, search wins.
 3. **Embeddings run on-device** via `@xenova/transformers` with
    `Xenova/all-MiniLM-L6-v2` (384-dim, ~23MB, quantized).
 4. **Storage is IndexedDB.** No vector database. Brute-force cosine over
-   10k documents is ~12ms — see §5 for the arithmetic.
+   10k documents is a measured 7.3ms — see §5.
 5. **The topic taxonomy is derived from user data**, never hardcoded beyond
    a small universal seed list.
 6. **Browser-specific APIs stay behind `src/platform/`** so a Firefox port
@@ -81,23 +92,41 @@ Four MV3 contexts, all sharing one origin and therefore one IndexedDB.
 | `src/content/` | Injected into visited pages. Extracts text via Readability. | No — would freeze the user's page |
 | `src/background/` | Service worker. Alarms, job queue, message routing. Dies after ~30s idle. | No — ephemeral, no DOM |
 | `src/offscreen/` | Hidden page via `chrome.offscreen`. **Inference host.** Has DOM + WebGPU. | **Yes — the workhorse** |
-| `src/dashboard/` | React app in a full tab. | Yes, for on-demand queries |
+| `src/dashboard/` | React app in a full tab. Renders; never computes. | **No** — see below |
 
 Because all four share an origin, they communicate through **shared IndexedDB
 state**, not an API layer. The offscreen document writes vectors; the
 dashboard reads them directly.
 
+**Keep all inference and every synchronous whole-corpus pass out of the
+dashboard, permanently.** This was originally written as "dashboard: yes, for
+on-demand queries" and is now measured: 87% of a backfill run had a thread
+blocked while the dashboard stayed fully responsive, purely because the work
+was in the offscreen document. Search runs there too, for the same reason —
+the scan is short, but it is still synchronous (§14).
+
 ```
 src/
-  content/      Readability extraction, per-site adapters
-  background/   service worker: alarms, queue, routing
-  offscreen/    transformers.js — embedding + inference
+  content/      Readability extraction, dwell + engagement, per-site adapters
+  background/   service worker: alarms, capture queue, routing
+  offscreen/    transformers.js — embedding, search index, queue drain
   dashboard/    React dashboard (extension page)
-  lib/          embeddings, clustering, storage, similarity, sessions
-  platform/     browser shims: getHistory(), runInference(), schedule()
+  lib/          browser-safe pipeline: filter, junk, titles, url, quality,
+                embeddings, vectors, dedupe, clustering, search, blocklist,
+                format, backfill, capture, blocking, storage, types
+  platform/     browser shims: browser, history, settings, messages
 scripts/
-  validate.ts   standalone validation harness
+  validate.ts        Phase 0 harness — thin CLI over src/lib
+  sanity.ts          embedding-path assertions
+  export-history.mjs Chrome SQLite → history-export.json (dev only)
+  fetch-model.mjs    downloads weights into .models for bundling
+  check-extension.mjs static preflight on dist/
 ```
+
+`src/lib` is browser-safe and isomorphic — no `node:*`, no `fs`, no `process` —
+so the Phase 0 CLI and the extension run the identical pipeline. `storage.ts`
+and `backfill.ts` are the exception: they need IndexedDB, so they are
+browser-only and deliberately not re-exported from `lib/index.ts`.
 
 ---
 
@@ -112,11 +141,13 @@ interface PageRecord {
   text: string;            // extracted body, capped ~8000 chars
   summary?: string;        // LLM-generated, OPTIONAL — never block on this
   vector: Float32Array;    // 384 dims
+  vectorSource: 'title'|'text';  // which field the vector came from — see §14
 
   format: Format;          // from domain rules
   topics: string[];        // from zero-shot similarity
   intent?: Intent;         // hybrid: domain + dwell + return count
-  extractionTier: 1|2|3|4; // which ladder rung handled it — see §8
+  extractionTier: 1|2|3|4; // which rung SUPPLIED the text — see §8
+  extractionQuality?: ExtractionQuality;  // absent on backfill: nothing to assess
 
   firstVisit: number;
   lastVisit: number;
@@ -127,6 +158,16 @@ interface PageRecord {
 
 type Format = 'video'|'docs'|'forum'|'article'|'code'|'social'|'shopping'|'other';
 type Intent = 'learning'|'debugging'|'job-hunting'|'shopping'|'entertainment'|'reference';
+
+interface ExtractionQuality {   // structural, not semantic — see §8 and §14
+  units: number;                // CJK chars + non-CJK tokens, script-neutral
+  coverage: number;             // extracted ÷ page text — completeness only
+  stopwordRatio: number|null;   // over the UNIQUE token set; null on non-Latin
+  terminatorsPer100Words: number;
+  typeTokenRatio: number;
+  score: number;
+  verdict: 'good'|'weak'|'poor';
+}
 
 interface Session {
   id: string;
@@ -175,16 +216,43 @@ similarity(pageVec, topics['Networking']) // → 0.67  ✓ tag it
 similarity(pageVec, topics['React'])      // → 0.09  ✗
 ```
 
-Threshold ~0.40. Sub-threshold pages go to the **unclassified pool** — this
-is not a failure, it is the discovery queue.
+Threshold ~0.40 — **unverified, and quite possibly wrong.** Measured
+title↔title similarity runs far below it (same-topic median 0.194), and
+title↔label is a different distribution that has never been measured. Do not
+build Phase 3 on this number without measuring it first (§14). Sub-threshold
+pages go to the **unclassified pool** — this is not a failure, it is the
+discovery queue.
 
 ### Clustering
 
-HDBSCAN (or k-means as a fallback) over the unclassified pool, weekly.
-`min_cluster_size` of 5–10. Clusters above that get LLM-named from their 8
-nearest-centroid titles and are promoted to real topics. Below that, they stay
-noise — which is exactly what makes brief anomalous browsing (a sibling
-borrowing the laptop) harmless.
+**Shared-nearest-neighbour clustering (Jarvis–Patrick) over a mutual-kNN
+graph**, weekly. Two pages are linked when each is in the other's top-`k` *and*
+they share at least `shared` neighbours; connected components below
+`min-cluster-size` fall out as noise.
+
+| Parameter | Default | Role |
+|---|---|---|
+| `--knn` | 10 | neighbours considered per node |
+| `--shared` | 4 | neighbours two nodes must share to keep their edge |
+| `--min-cluster-size` | 5 | smaller components become noise |
+| `--min-sim` | 0.20 | edge floor — measured **inert**, see §14 |
+
+Both tests are rank-based, not threshold-based, which is the whole point: the
+absolute cosine scale is dataset-specific (§14), so a fixed cutoff does not
+transfer between users. The shared-neighbour test is what stops chaining —
+mutual-kNN alone welds two topics together through one accidental link.
+
+Clusters get LLM-named from their 8 nearest-centroid titles and are promoted to
+real topics. Below `min-cluster-size` they stay noise — which is exactly what
+makes brief anomalous browsing (a sibling borrowing the laptop) harmless.
+
+HDBSCAN was the original choice and was rejected: it needs a UMAP step to
+behave on 384 dims and has no trustworthy JS port. `--algo community` and
+`--algo kmeans` remain in `scripts/validate.ts` as comparison arms only.
+
+Near-duplicate pages are collapsed to one weighted node **before** clustering,
+or twenty near-identical LeetCode rows saturate each other's neighbourhoods
+(§14).
 
 Trigger early if the unclassified pool exceeds ~50 items.
 
@@ -194,9 +262,20 @@ seconds at this scale and incremental variants are a bug factory.
 ### Why no vector database
 
 10,000 pages × 384 dims × 4 bytes = **~15 MB**. Loads into memory instantly.
-A brute-force cosine scan is ~4M multiply-adds — 5–15ms in plain JS with typed
-arrays. A vector DB is pure overhead until well past 100k pages, which is
-years of browsing.
+A brute-force cosine scan is ~4M multiply-adds.
+
+**Measured**, top-20 over L2-normalized vectors, median of three runs:
+
+| nodes | scan | vectors |
+|---|---|---|
+| 2,670 | **2.17 ms** | 3.9 MB |
+| 5,747 | **4.51 ms** | 8.4 MB |
+| 10,000 | **7.31 ms** | 14.6 MB |
+| 50,000 | **33.67 ms** | 73.2 MB |
+
+Linear in node count. The original estimate of ~12ms at 10k was conservative by
+1.6×. At 50,000 nodes the scan is still under half a frame, so a vector DB
+remains pure overhead well past any realistic corpus — years of browsing.
 
 ---
 
@@ -228,15 +307,21 @@ Separate **when it's computed** from **when it's shown**.
 
 | Layer | When | Work | Cost |
 |---|---|---|---|
-| Capture | tab close / dwell > 30s | extract, dedupe, store | ~10ms |
-| Embed | immediately after capture | MiniLM → 384-dim → IndexedDB | ~50ms |
+| Capture | dwell > 30s focused, or pagehide | extract, assess quality, enqueue | ~10ms |
+| Embed | drained off the capture path, ~1 min alarm | MiniLM → 384-dim → IndexedDB | ~25ms/page (measured) |
 | Summarise | idle ≥ 5 min, batched | LLM 2-line summary + tags | off critical path |
 | Sessions | debounced, ~2 min after last capture | group + label today's sessions | ms |
 | Clusters | weekly | full recompute, promote topics | seconds |
-| Search | on demand | cosine over all vectors | ~12ms |
+| Search | on demand | cosine over all vectors | 2ms at 2.7k, 7ms at 10k (measured) |
 
-30 videos in a day is 30 × 50ms = **1.5 seconds of total compute.** This is not
-a batch-processing problem and never was.
+30 videos in a day is 30 × 25ms = **under a second of total compute.** This is
+not a batch-processing problem and never was.
+
+Embedding is **queued and drained on an alarm**, not run inline at capture.
+Per page the work is trivial, but the queue survives the service worker being
+torn down and keeps §2.7 true by construction rather than by luck. The rule
+that matters is not per-stage but per-batch: any *synchronous pass over the
+whole corpus* is the thing that blocks, whatever stage it sits in (§14).
 
 **Do not defer today's rollup to midnight.** A user opening the dashboard at
 3pm must see this afternoon's sessions, not an empty screen. Sessions still
@@ -265,7 +350,7 @@ hard — always fall through.
 
 | Tier | Method | Coverage | Quality |
 |---|---|---|---|
-| 1 | Custom adapters (YouTube transcript, Reddit, GitHub, Stack Overflow) | ~15% | Best |
+| 1 | Custom adapters — **measured as needed: YouTube (transcript), NeetCode (JS-rendered problem statement)** | ~15% | Best |
 | 2 | `@mozilla/readability` | ~70% | Good |
 | 3 | Title + `<meta description>` + `og:` tags | ~99% | Adequate |
 | 4 | Domain rule only | 100% | Weak but never empty |
@@ -274,10 +359,21 @@ Tier 3 is load-bearing: every page has a title, and titles alone embed well
 enough to categorise. That is why the history backfill works with no page
 content at all.
 
+Reddit, GitHub and Stack Overflow were named as tier-1 candidates in the
+original draft and are **unmeasured guesses**. GitHub was measured and removed:
+repo pages score good 0.87 at 82% coverage, and only profile and sub-tab pages
+fail, which the ladder already demotes (§11, §14). Do not build an adapter for
+any site until its failure is measured.
+
 Write 5–8 adapters maximum, and only for domains that coverage stats show are
-**both frequent and failing**. Log `extractionTier` on every record so the
-settings screen can report "94% of pages categorized" — that metric tells you
-which adapter to write next instead of guessing.
+**both frequent and failing**.
+
+**The tier alone is not a coverage metric.** It records which rung *supplied*
+the text, not whether the text is usable — every page in the first capture test
+reported tier 2 while a third was worthless. `extractionQuality` is stored
+alongside it, and the quality verdict is what drives fall-through: a rung is
+accepted the moment it is not `poor`. Report coverage from the quality verdict,
+never from the tier (§14).
 
 ---
 
@@ -289,7 +385,20 @@ the shared-machine problem tractable.
 - **Never capture:** incognito windows, `chrome://`, localhost, and a
   sensitive-category blocklist (banking, health, email, adult, internal
   corporate tools). Exclude *before* extraction — never embed them.
-- **Encryption at rest** for stored content.
+- **Storage is unencrypted, deliberately.** The index lives in extension-local
+  IndexedDB inside the Chrome profile directory, protected by the same OS file
+  permissions and profile boundary as Chrome's own history. Anyone who can read
+  it can already read Chrome's `History` SQLite, saved passwords and session
+  cookies — all higher-value than this index. Encrypting our store while those
+  sit beside it in plaintext is security theatre, and there is no key we could
+  hold that such an attacker could not: with no user passphrase in the product,
+  the key would live in `chrome.storage`, same profile, same permissions. That
+  is obfuscation, and shipping it labelled "encrypted" is worse than shipping
+  nothing, because it invites trust it cannot earn. See §14 — this is a
+  conscious downgrade, not an overlooked requirement.
+- **What actually protects the user** is everything else in this section: the
+  blocklist applied *before* extraction, the pause toggle, retroactive delete,
+  and a separate Chrome profile on a shared machine.
 - **No unencrypted copy of user history may be written outside the project
   directory** — never to `os.tmpdir()`, `%TEMP%`, `/tmp`, or any other shared
   location, which on a multi-user machine is world-readable and outlives the
@@ -379,12 +488,50 @@ running, embeddings stored in IndexedDB, search returning results in a bare UI.
 Content script, Readability, extraction ladder, dwell filtering, active
 engagement tracking, and **all of §9**.
 
+**Sites measured as needing tier-1 adapters** (from the capture tests):
+YouTube (transcript — see §14, this is the one case no structural threshold can
+catch) and NeetCode (problem statement, JS-rendered and invisible to
+Readability).
+
+Confirmed good without an adapter: Medium, job-listing pages, and **GitHub repo
+pages** — `GANDLA-ARAVIND/NUTRILENS` scored good 0.87 at 7,412 chars with 82%
+coverage, and `MoonshotAI/Kimi-K3` returned 7,998 chars of real README. Only
+profile and sub-tab pages fail there, and the ladder already demotes them (the
+Agents tab correctly fell to tier 3 at 0.68), so no adapter is warranted.
+
+**Step 2 must include a measurement, not only the extraction ladder.** Once
+capture is running, the corpus holds title-derived and text-derived vectors
+side by side (§14). Compare query-to-title against query-to-text similarity
+distributions **on the same pages**, and re-check the two constants calibrated
+on titles — the 0.97 collapse threshold and the 0.194 within-topic median.
+Phase 3 clusters this mixed corpus, so the numbers have to be trusted before
+then.
+
 ### Phase 3 — Intelligence (week 3)
 Zero-shot classification, clustering, cluster labeling, topic promotion,
 session reconstruction.
 
 ### Phase 4 — Dashboard (week 4)
 React UI. v1 surfaces only — see §12.
+
+**Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
+these are quality gaps found on real queries, all deferred deliberately:
+
+1. **Empty state.** Cosine always returns `k` results, so the UI cannot tell
+   "no matches" from "your matches". Must be **relative, not an absolute
+   cutoff** — measured top scores ranged 0.376 to 0.892 across five queries, so
+   any fixed floor is the transferability bug of §14 again. The signal is
+   distribution *shape*: a high top score with a steep drop-off means a real
+   hit, a flat profile means nothing matched. Same rank-and-margin principle
+   that replaced the absolute clustering threshold.
+2. **Result-level duplicate saturation.** Fix with domain/prefix diversity in
+   ranking — **not** a lower collapse threshold, which would over-merge
+   genuinely distinct pages. This is the Phase 0 neighbourhood-saturation
+   problem recurring one layer up: there it starved the kNN graph, here it
+   starves the result list.
+3. **Compositional queries.** Expected to improve in Phase 2 when page content
+   replaces titles as the embedded text, so revisit *after* Phase 2 rather than
+   engineering around it now.
 
 ### Phase 5 — Ship (week 5)
 README with a demo GIF in the first screen, architecture diagram, design-
@@ -423,13 +570,26 @@ Patterns view (hour × weekday heatmap, format split, session-length
 distribution), Resources view, "Rediscover" (one forgotten thing from 3 months
 ago), weekly digest, user-defined targets, Firefox port, encrypted cloud sync.
 
+**Passphrase-encrypted local storage** is a v2 candidate rather than a missing
+v1 feature. A user-supplied passphrase is the only thing that makes real
+encryption possible — it is the one key an attacker with profile access does
+not have. But it changes the product, not just the storage layer: a locked
+index cannot be searched, so it needs an explicit unlock flow, a decision about
+what happens to background capture while locked, and an answer for a forgotten
+passphrase that is not "your history is gone".
+
 ---
 
 ## 13. Conventions
 
-- **Commit at every working step.** Small commits, real messages:
-  `feat: title embedding pipeline`, never `update`. The commit graph is part
-  of the portfolio.
+- **NEVER run git or gh commands.** No add, commit, push, branch, checkout,
+  stash, reset, or PR creation. The developer handles all version control.
+  When work is complete, state what changed and stop — do not offer to commit,
+  and do not treat a completed task as a reason to commit.
+- **The developer commits at every working step.** Small commits, real
+  messages: `feat: title embedding pipeline`, never `update`. The commit graph
+  is part of the portfolio. This describes *their* workflow — it is not
+  authorisation to commit on their behalf, and was misread as such once.
 - Conventional commits: `feat:` `fix:` `chore:` `docs:` `refactor:` `test:`
 - TypeScript strict mode on.
 - Vitest for tests; GitHub Actions running lint + tests on every PR.
@@ -438,57 +598,36 @@ ago), weekly digest, user-defined targets, Firefox port, encrypted cloud sync.
 
 ---
 
-- NEVER run git or gh commands. No add, commit, push, branch, checkout,
-  stash, reset, or PR creation. The developer handles all version control.
-  When work is complete, state what changed and stop — do not offer to
-  commit, and do not treat a completed task as a reason to commit.
+## 14. Standing rules
 
-## 14. Decision log
+Binding constraints on future work. Every row here is a rule that, if broken,
+reintroduces a bug this project has already had — or names work that must
+happen before a later phase can be trusted.
 
-Append new decisions here with a one-line rationale.
+**The record of what was decided and measured lives in [DECISIONS.md](DECISIONS.md).**
+That file explains *why*; this section and the ones above it state *what is
+true now* and *what you must do*.
 
-| Decision | Rationale |
+| Rule | Why it binds |
 |---|---|
-| No backend | Privacy is the differentiator; also removes cost and auth entirely |
-| No vector DB | 15MB of vectors, 12ms brute-force scan — a DB is pure overhead |
-| Derived taxonomy | A hand-written topic list only ever fits its author |
-| No productivity score | Invented metrics are detectable and destroy trust in honest features |
-| Extension page, not hosted dashboard | Same React work, zero server, privacy intact |
-| Chromium-only v1 | ~75% of desktop users from one build; Firefox is 2–3% |
-| Day boundary at 04:00 | Late-night work belongs to the previous day |
-| Phase 0 clusters with mutual-kNN + shared-neighbour, not HDBSCAN | HDBSCAN needs a UMAP step to behave on 384 dims and has no trustworthy JS port; `--algo community` and `--algo kmeans` remain as comparison arms |
 | Clustering keys on neighbour *rank*, not an absolute cosine cutoff | Measured on MiniLM title embeddings: same-topic pairs median 0.194, cross-topic median 0.021 — the separation is real but the absolute scale is dataset-specific, so a fixed threshold does not transfer |
-| Shared-neighbour test on every graph edge | Mutual-kNN alone chains: one accidental link welds two topics into one blob under connected components. Requiring shared context breaks bridges, which by definition have no mutual crowd |
 | Boilerplate title suffixes are derived from the data, never hardcoded | "- YouTube" on 800 titles clusters on the suffix, and §4 is explicit that a domain is not a category — but a hardcoded suffix list would violate §6, so frequency across the user's own titles decides |
-| `scripts/export-history.mjs` reads Chrome's local SQLite | Takeout takes hours and drops `visitCount`; `node:sqlite` is built in, so this stays zero-dependency and fully local |
 | §5's ~0.40 zero-shot threshold is unverified | Title↔title similarity measures far below 0.40. Title↔label is a different distribution, but the 0.40 figure must be measured before Phase 3 depends on it |
-| Cluster output displays the original title, embeds the stripped one | react.dev titles every page "… – React", so the suffix stripper removes the one word that identifies the cluster. Measured: stripping costs 0.33 of within-group similarity and 63% of the topic/unrelated gap. Clustering still works; a human reading the output could not tell what the cluster was, which defeats the §11 exit criterion |
-| §5's "no vector DB" arithmetic holds, with margin | Brute-force top-20 cosine over normalized vectors, medians of three: **2,670 nodes 2.17ms · 5,747 nodes 4.51ms · 10,000 nodes 7.31ms · 50,000 nodes 33.7ms**. §5 predicted ~12ms at 10k, so the estimate was conservative by 1.6×. Linear in node count, as expected. At 50k it is still a third of a frame — a vector DB would remain pure overhead for years of browsing. Scanning collapsed representatives rather than all pages also stops twenty near-identical LeetCode rows filling the results |
-| The width cap flipped the blocking ranking: collapse is now the dominant blocker | Post-fix medians in the extension: embed **96.4s** (was 133.8s), longest embed stall **1.3s** (was 17.1s), total **109.3s** (was 149.7s). Collapse now blocks **11.9s unbroken** against embed's 1.3s longest — the ranking inverted, exactly as the batch-size rule predicts: capping width shrank the per-batch unit of work while collapse remained a single synchronous pass over the whole corpus. Collapse is the Phase 3 responsiveness target |
-| A stall offset is measured against the attributed *segment*, never a stage looked up by name | The dashboard reported "began −6ms into collapsing", which is impossible. A gap almost always straddles a boundary — the tick before a long block fires a few ms before the stage switches — and resolving the stage's start by *name* afterwards can return an earlier occurrence. `attribute()` now returns the winning segment's start alongside its label, and the offset is clamped at zero. Note the fix is in the offset, not the attribution: overlap already assigned the 11.9s block to collapse correctly, and reattributing it to the previous stage on the strength of a 6ms boundary artifact would have restored the exact misattribution bug fixed earlier |
-| Batch cost is linear in padded sequence width, and one title can dominate a batch | Every title in a batch pads to the longest, so a single outlier taxes 31 others. Measured **Pearson r = 0.992** between padded width and batch duration (width² fits worse at 0.920, so FFN dominates attention at these lengths). Titles are median 10 tokens, p99 36 — but max 875, and that one batch cost 4.25s against a 0.142s median, **30×**. 34% of embed time was spent above median batch cost. This is the mirror image of the Phase 0 padding finding: equalising width bought no *accuracy*, but width is almost the whole *latency* story |
+| **Standing rule: any string-based heuristic must be tested against Telugu, Chinese and Arabic before it ships** | Five instances so far, each of which would have silently deleted or misjudged non-English content: (1) the `\W`-based empty-title check — JS `\W` is ASCII-only, so every title written entirely in a non-Latin script matched "no word characters" and was dropped; (2) the bare-URL rule, whose first draft keyed on "no whitespace", which is *normal* in Chinese, Japanese and Thai; (3) the English stopword list in quality scoring, which had to be skipped rather than replaced with a neutral value, or every non-English page reads as navigation chrome. **(4)** the sentence-terminator class, which covered Latin, CJK and Devanagari but not Arabic/Urdu (U+061F, U+06D4) — and Thai, Lao, Khmer and Myanmar end sentences with a *space*, so zero terminator density there is normal prose. **(5)** the 400-*character* usable-content floor: the same paragraph is 123 characters in Chinese and 368 in English, a measured ~3× density difference, so a character floor rejects genuine CJK prose as too short. Replaced with script-neutral **units** (one CJK character, or one whitespace token elsewhere) — the word tokenizer had the mirror bug, matching an entire unspaced Chinese sentence as one token and inflating terminator density to 57 per 100 "words" against 6.7 for the same English. The failure mode is always the same and always silent. **Instances 4 and 5 were caught by this rule during pre-ship testing rather than in production, which is the rule working.** Seven-script audit now passes: Chinese 0.90, Telugu 0.86, Japanese 0.79, Hindi 0.77, Urdu 0.70, Arabic 0.60, Thai 0.45 — none rejected |
+| **A score built from fewer components is less trustworthy, and nothing currently says so** | Dropping inapplicable components fixed the *bias* but introduced a *confidence* problem: Thai loses both the stopword and terminator components, so its 0.45 rests on **one** signal, while Chinese 0.90 rests on three — and the two render identically in the UI and compare as equals in the ladder's best-of-poor tie-break. A one-component score is close to "length, renamed". Arabic scoring `weak` at 78 units may be the same artifact rather than a real quality signal. **Not fixed.** Store the contributing-component count alongside the score, display it, and treat a low-component score as weak evidence rather than a measurement — including in the ladder, where a three-component 0.60 should probably beat a one-component 0.64 |
+| An inapplicable metric component must be **dropped and its weight redistributed**, never scored as zero | Scoring a signal that does not exist for the input at zero is indistinguishable from measuring it and finding nothing. Thai prose has no sentence terminators at all, so a zeroed terminator component scored real Thai writing at 0.29 and rejected it. The same mistake was made twice in one function: the stopword component was already being excluded for non-Latin text while the terminator component was still being zeroed. Components now carry weights that are summed only over those that apply |
+| The good/poor boundary is calibrated on synthetic reconstructions and is **not settled** | Same provenance as the Phase 0 fixture, and the same warning applies: it will need retuning on real captures. Already visibly imperfect — on the NeetCode case the ladder picks tier 2 (0.67) over the more informative tier 3 (0.62), because both fall under the 400-char floor and the shorter announcement banner has punchier sentence structure. Deliberately **not** tuned to fix that, since tuning a threshold against reconstructions is the exact error this row exists to warn about. Retune against stored `extractionQuality` once real captures accumulate |
+| **Stopword ratio measures "contains function words", not "is prose" — repetition satisfies the first without the second** | A Naukri page repeating `"Prep for this interview"` five times contributed *for* and *this* ten times and scored **0.324, inside prose range**, for a wall of UI labels. Fixed by computing the ratio over the **unique token set**, so a repeated template contributes each function word once: the same text now scores **0.10**, and the verdict moves `weak 0.568` → `poor 0.24`. The type-token ratio (0.676) was already a repetition signal sitting unused next to a metric being fooled by repetition. **General rule: any frequency-based text metric must be checked for repetition sensitivity** — templated UI is the common case, and it inflates every raw-count statistic |
+| **The corpus is becoming heterogeneous, and ingestion route is leaking into ranking** | Backfilled pages are embedded from a ~10-token title; captured pages from up to 8000 characters of body text. Query-to-short-title and query-to-long-text similarity distributions differ systematically, so once both live in one index, **whether a page happened to be captured or only backfilled becomes a ranking signal unrelated to relevance** — an artifact of ingestion history, invisible in the results. `PageRecord.vectorSource` (`'title' \| 'text'`) now records which, so the mix is measurable rather than invisible; DB v3 stamps every pre-existing record `'title'`, which is a statement of fact since everything written before it came from the backfill. **Not fixed.** Measure in Phase 2 step 2: query-to-title vs query-to-text similarity distributions over the *same* pages. Likely resolutions are storing both vectors per page, or always embedding the title and treating body text as a separate searchable field |
+| Constants calibrated on titles do not transfer to body text | The 0.97 collapse threshold and the measured 0.194 within-topic / 0.021 cross-topic medians were **all title-to-title measurements**. Neither has been checked against text-derived vectors, so both are unverified on any captured page — the same class of error as §5's unverified 0.40 zero-shot threshold, and it now applies to constants already in use rather than to one not yet relied on. Re-measure before Phase 3 clusters a mixed corpus |
 | Bare-URL titles are junk; a slash alone does not make a URL | Chrome falls back to the URL when a page serves no `<title>`, and those tokenize into hundreds of wordpieces — the 875-token offender was `cf.legacypoint.site/middle.html?cs=…`. No title means no topic, the same rationale as the other junk tiers. **The rule must require a dotted host before the slash:** a first version keyed on "spaceless ASCII containing `/`" also matched `GANDLA-ARAVIND/WATT-WISE-PROJECT`, which is one of the most informative titles in the corpus and anchors a real 136-page cluster. It must also require ASCII, or it deletes every Chinese, Japanese and Thai title — the same trap as the ASCII-only `\W` that once ate Telugu |
 | Titles are truncated to 64 tokens at the *token* level, never the word level | A word-level cap measured cosine **1.0000** against the untruncated vector on eight of the ten worst offenders, which looked like a perfect result and was worthless: those titles are unbroken URLs with no whitespace, so it cut nothing. Token-level truncation moves the worst vector to 0.19 cosine — but only on junk URLs, and 0.90–0.99 on real titles. 64 leaves 99.8% of titles untouched. Enforced via `tokenizer.model_max_length` inside `createEmbedder`, so every caller inherits it |
-| Phase 0 baseline, superseded 2026-07-29: **91 clusters / 33.7% noise / 2,671 unique nodes / 5,818 kept** at `--knn 10 --shared 4` | Replaces 104 / 33.7% / 2,699 / 5,873. The corpus changed deliberately: the bare-URL junk rule drops 55 pages and the 64-token cap alters the vectors of the few very long titles. Noise held exactly at 33.7% and the recognisable clusters survived (DSA, job search, the GitHub portfolio), so this is corpus drift from an intended filter change, **not a regression**. Any future baseline comparison must start here |
 | **Blocking scales with batch size, not with stage** | Measured in the extension at ~5,200 pages. Embed blocks **115.4s of its 133.8s stage — 86% — across 153 stalls, longest 16.5s**; that single stall exceeds collapse's entire 11.6s block. An earlier claim here that embed "never freezes the thread" was **wrong**: the per-batch IndexedDB `await` yields between batches, which prevents *one* continuous freeze but not 153 separate ones. The rule that actually holds: per page, embed is ~25ms (133.8s / 5,216), so live capture of a single page is harmless; a batch of 32 blocks ~0.75s; a synchronous pass over the whole corpus blocks for as long as it takes. **The danger is any synchronous pass over the whole corpus, whatever the stage it sits in.** Collapse is the worst case because it is unbroken *and* quadratic |
 | Run-to-run variance is large enough that a single measurement is worthless | Three runs, identical input. Embed **175.5 / 153.3 / 133.8s, median 153.3**. Collapse **14.5 / 25.4 / 11.7s, median 14.5** — a deterministic loop over identical data varying more than 2×, so the variance is the machine, not the algorithm. **Benchmark with three runs and take the median; never quote a single number.** The rule is validated, not assumed: single numbers here span 2×. Corollary: the Node harness predicted 11.1s for collapse against a 11.7–25.4s spread, so Node estimates set the order of magnitude and nothing finer |
-| §3's context isolation is what keeps the UI alive — validated, not assumed | **87% of the run had a thread blocked, and the dashboard stayed fully responsive**, because every block was in the offscreen document while the dashboard ran in its own context. Had the pipeline lived in the dashboard, or in a worker sharing its thread, this would have been a two-minute UI freeze. The offscreen document is not merely "where the model fits" — it is the isolation boundary that makes a blocking pipeline tolerable at all. Keep heavy work out of the dashboard context permanently |
-| The 253ms "model" stage is real, not a mislabel — but the 16.5s embed outlier is still unexplained | Suspected that ORT defers session init to first inference, which would hide the model cost inside the first embed batch. **Measured: it does not.** `pipeline()` takes 174ms and the first inference runs at 0.89× the median of the next five — no deferral, so 253ms in the extension is consistent with Node, not implausible. That leaves the 16.5s stall unaccounted for. `BlockingEvent` now records `sinceStageStartMs`: if the worst stall begins at ~0ms into embed it is lazy setup after all, and anywhere else it is not (GC, throttling, a pathological batch). Caveat: measured with `onnxruntime-node`, so confirm in the extension |
-| WASM in the extension is ~3× slower than native ONNX in Node, as expected | Embed median 153.3s in the offscreen document against ~57s for the same corpus size in Node — single-threaded `ort-web` (forced by MV3's CSP, which blocks SharedArrayBuffer and blob workers) versus multi-threaded `onnxruntime-node`. Collapse is only 1.3–2.3× slower, which is the consistency check: it is pure JS on V8 in both, with no WASM involved |
 | Blocking is measured by timer lateness, attributed by interval overlap | Two bugs made the first version report zero stalls for a stage that blocked for 19s: `clearInterval` immediately after the last stage killed the pending late tick that carried the largest gap, and reading "the current stage" when the tick finally fires blames whichever stage came *after* the block. `stop()` now waits a tick, and stage changes are timestamped so each gap is attributed by overlap |
-| The model and the ONNX runtime ship inside the package; no `host_permissions` | A runtime download needs a host permission, which puts a second alarming line next to "read your browsing history", and a network call contradicts the pitch. `env.allowRemoteModels = false` makes it structural rather than aspirational: a missing file errors instead of silently fetching. Costs ~42MB packaged (22.6 model + 18.3 ORT wasm). Verified by loading with `fetch`, `http.request` and `https.request` all replaced by throwing stubs |
-| `content_security_policy.extension_pages` declares `'wasm-unsafe-eval'` | MV3 blocks `WebAssembly.instantiate` outright without it, so the ONNX runtime cannot start. It permits WASM compiled from bytes already in the package — it is *not* remote code, does not relax `script-src` for JavaScript, and leaves the no-network guarantee intact. Manifest keys carry no comment: JSON has none, and Chrome logs `//`-prefixed keys as errors |
-| WASM streaming compilation is unavailable in MV3; the ArrayBuffer fallback is accepted | `WebAssembly.instantiateStreaming` needs `Content-Type: application/wasm`, and nothing controls the response headers for a `chrome-extension://` resource — there is no server config to set. onnxruntime-web 1.14 exposes no `wasmBinary` hook to bypass it either, so the emscripten fallback is the only path. Measured cost: read 8ms + compile 18ms = 26ms, of which streaming would have hidden at most the 8ms read, once per offscreen document. Do not re-investigate |
 | MV3 message passing is a broadcast, not a channel — every message needs an explicit `target` | `chrome.runtime.sendMessage` delivers to *every* listener in every context. A dashboard PING arrived at the background and the offscreen document simultaneously, and since only the first `sendResponse` wins, the caller silently got whichever replied first. `target` is part of every message variant so one cannot be built without it, and `onMessage(self, …)` filters centrally so a new listener cannot reintroduce the bug |
 | The service worker holds no state about other contexts | It is torn down after ~30s idle, so anything it remembers about another context is a lie the moment it sleeps. An "offscreen ready" flag set by a push announcement at offscreen load died with the worker instance that received it, and the offscreen document only announced once — the flag could never become true again. Readiness is pulled on demand (create if absent, ping, await reply), which is stateless and therefore sleep-proof |
 | An absolute similarity *floor* is the same transferability bug as an absolute clustering *threshold* | `--min-sim` was a fixed 0.20 sitting on the measured within-topic median of 0.194 — the exact failure the rank-based decision above was taken to avoid, reintroduced under a different parameter name. Swept, and on real history it proved **inert**: results are byte-identical across 0.05–0.20 because every node's top-15 neighbours already exceed 0.20. Harmless here, wrong in kind, and it would bite on a sparser corpus |
-| Audit of remaining absolute similarity constants | `--min-sim` 0.20 (inert, above); `--threshold` 0.35 (`--algo community` only, a comparison arm); `--dup-threshold` 0.97 (**defensible** — it detects near-*identity*, not topical relatedness: duplicates sit at ~1.0 against a measured cross-topic max of 0.44, so the margin is enormous and scale-stable). §5's 0.40 zero-shot threshold remains unverified. Frequency rules are already scale-relative (`max(5, 0.3%)`) and need no change |
-| Junk titles (auth walls, bot checks, error pages) are dropped before embedding | They carry no topic, recur in the hundreds under many distinct URLs so the normalized-URL dedupe never sees them, and once embedded they form dense identical neighbourhoods. Most are auth pages that §9 forbids capturing at all |
-| Junk prefix patterns apply only to titles under 40 chars | An interstitial announces itself in a few words. `/^error/` alone eats "Error handling with Result and the question mark operator", a real Rust doc page — length is what separates the two |
-| Near-duplicate pages collapse to one weighted node before clustering | LeetCode serves `/problems/two-sum/`, `/description/` and `/submissions/` under one title, so URL dedupe misses them. Twenty copies saturate a page's k nearest neighbours with itself: no related page can link, every problem becomes its own cluster, and unique pages get no mutual edges at all. Measured on real history: 553 clusters, 41% noise, four separate "Sign in" clusters |
-| int8 batch-shape drift accepted, not engineered around | A title's vector shifts ~0.993 cosine when its batch has a different padded sequence width. fp32 shows none, so mean pooling masks padding correctly. Padding short batches to 32 rows does not help — width, not row count, is the driver — and top-6 neighbour rank is 100% stable across regroupings, so nothing mutual-kNN reads is affected |
-
----
 
 ## 15. Known limitations — state these honestly in the README
 
@@ -500,6 +639,37 @@ Append new decisions here with a one-line rationale.
   organise.
 - Extraction coverage is imperfect on some sites. Report the real number.
 - Chrome history retention caps the backfill at ~90 days.
+- **Your index is stored unencrypted on your machine.** It lives in the
+  extension's IndexedDB inside your Chrome profile, protected by the same
+  operating-system permissions as Chrome's own browsing history, saved
+  passwords and cookies — no more, no less. Nothing is transmitted anywhere.
+  We do not encrypt it, and we would rather say so than imply a protection we
+  cannot deliver: with no passphrase to derive a key from, any key we held
+  would sit in the same profile an attacker already has. If you share a
+  machine, use a separate Chrome profile — that is a real boundary, and it is
+  the one we recommend.
+- **Search has no empty state — it always returns results.** Cosine similarity
+  ranks; it does not decide relevance. A query for something the user has never
+  read still returns 20 rows, confidently ordered. Measured: "docker
+  networking" against a corpus with no Docker content returned a full page of
+  results topping out at 0.376, all irrelevant. The score is visible in the UI,
+  but a score is not an answer to "did you find anything". Until a relative
+  confidence signal exists (§11 Phase 4 backlog), the honest framing is that
+  search *ranks* rather than *matches*.
+- **Near-duplicate pages can still crowd the results.** Collapse merges at 0.97
+  cosine, which is near-identity; pages that differ slightly more survive as
+  separate nodes and can dominate a result list. Measured: "firebase database
+  setup" returned 8 of 20 rows as variants of one page. Lowering the collapse
+  threshold is the wrong fix — it would over-merge genuinely distinct pages —
+  so this needs diversity in ranking, not in deduplication.
+- **Queries are matched term-by-term, not compositionally.** A bi-encoder over
+  short titles has no mechanism to bind terms together, so "that DSA video in
+  Telugu" ranked a Telugu music channel (0.626) above the actual DSA roadmap
+  videos (0.601): each term matched something, and the wrong page matched one
+  term strongly. This is inherent to the model class and the input length, not
+  a tuning error. It should improve when Phase 2 replaces titles with page
+  content, and the README should not promise natural-language question
+  answering before then.
 - **Backfilled sessions are approximate; live-captured ones are exact.**
   `chrome.history.search()` returns only `lastVisitTime`, so every backfilled
   page is stored with `firstVisit === lastVisit` — a page read across three

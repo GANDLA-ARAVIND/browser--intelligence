@@ -290,6 +290,54 @@ li[data-state="fail"] .dot {
   overflow-wrap: anywhere;
 }
 
+.captures {
+  list-style: none;
+  margin: 0.9rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 1.1rem;
+}
+
+.capture-head {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.verdict {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.verdict-good { color: var(--ok); }
+.verdict-weak { color: var(--muted); }
+.verdict-poor { color: var(--fail); }
+
+.capture-text {
+  margin: 0.4rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  max-height: 22rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.linkish {
+  margin-top: 0.3rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .settings-intro {
   margin: 0 0 1rem;
 }

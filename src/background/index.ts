@@ -21,7 +21,12 @@ import {
   onStartup,
   openDashboard,
   sendMessage,
+  type MessageContext,
 } from '../platform/browser.js';
+import { isSensitive } from '../lib/blocklist.js';
+import { enqueueCapture, hashId, openDatabase } from '../lib/storage.js';
+import { normalizeUrl, isLocalHost } from '../lib/url.js';
+import type { CapturedPage } from '../lib/capture.js';
 import { readHistoryWindows } from '../platform/history.js';
 import { loadSettings } from '../platform/settings.js';
 import type { AcceptedResponse, Message, Response, StatusResponse } from '../platform/messages.js';
@@ -91,7 +96,76 @@ async function startBackfill(): Promise<AcceptedResponse> {
   return accepted;
 }
 
-function handle(message: Message): Promise<Response> | Response | undefined {
+/**
+ * Accepts a capture and queues it. Never embeds — that would block the worker
+ * and die with it (§14).
+ *
+ * The §9 checks run again here even though the content script already ran them.
+ * The content script executes in a page the extension does not control, and a
+ * queue write is the last point before user text is persisted; a second check
+ * on trusted ground costs microseconds.
+ */
+async function queueCapture(page: CapturedPage, senderIncognito: boolean): Promise<AcceptedResponse> {
+  if (senderIncognito) return { ok: true, accepted: false, reason: 'incognito' };
+
+  let parsed: URL;
+  try {
+    parsed = new URL(page.url);
+  } catch {
+    return { ok: true, accepted: false, reason: 'unparseable url' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: true, accepted: false, reason: 'scheme' };
+  }
+  if (isLocalHost(parsed.hostname.toLowerCase())) return { ok: true, accepted: false, reason: 'localhost' };
+
+  const settings = await loadSettings();
+  if (isSensitive(page.url, settings.blockedCategories)) {
+    return { ok: true, accepted: false, reason: 'blocklist' };
+  }
+
+  const normalized = normalizeUrl(page.url);
+  if (normalized === null) return { ok: true, accepted: false, reason: 'unnormalizable url' };
+
+  const db = await openDatabase();
+  await enqueueCapture(db, { ...page, id: hashId(normalized), queuedAt: Date.now() });
+  console.log(`[background] queued ${page.url} (tier ${page.extractionTier}, ${page.text.length} chars)`);
+
+  // Drain off the capture path, not on it.
+  scheduleDrain();
+  return { ok: true, accepted: true };
+}
+
+/**
+ * §7: heavy work is queued and drained during idle. A debounced alarm keeps the
+ * drain off the capture path while still landing within a minute, and alarms
+ * survive the worker being torn down — a `setTimeout` would not.
+ */
+const DRAIN_ALARM = 'drain-queue';
+
+function scheduleDrain(): void {
+  // delayInMinutes is the floor Chrome allows; anything shorter is coerced.
+  void chrome.alarms.create(DRAIN_ALARM, { delayInMinutes: 1 });
+}
+
+async function runDrain(): Promise<void> {
+  try {
+    await ensureOffscreenDocument();
+    const result = await sendMessage({ target: 'offscreen', type: 'DRAIN_QUEUE' });
+    if (result === null) return;
+    console.log(`[background] drained ${result.processed}, ${result.remaining} remaining`);
+    // More than one batch was waiting; come back for the rest.
+    if (result.remaining > 0) scheduleDrain();
+  } catch (error) {
+    console.error('[background] drain failed', error);
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === DRAIN_ALARM) void runDrain();
+});
+
+function handle(message: Message, context: MessageContext): Promise<Response> | Response | undefined {
   switch (message.type) {
     case 'PING':
       console.log(`[background] ping from ${message.from}`);
@@ -102,6 +176,11 @@ function handle(message: Message): Promise<Response> | Response | undefined {
         console.log(`[background] offscreen probe: reachable=${offscreen.reachable} attempts=${offscreen.attempts}`);
         return { ok: true, serviceWorkerStartedAt, offscreen } satisfies StatusResponse;
       });
+
+    case 'CAPTURE_PAGE':
+      // Incognito comes from the sender, not the page: a content script runs
+      // inside a document the extension does not control.
+      return queueCapture(message.page, context.incognito);
 
     case 'START_BACKFILL':
       return startBackfill().catch((error: unknown) => ({

@@ -10,16 +10,31 @@
  */
 
 import type { BlockingEvent } from './blocking.js';
+import type { QueueItem } from './capture.js';
 import type { Format } from './format.js';
+import type { ExtractionQuality } from './quality.js';
 
 export const DB_NAME = 'browser-intelligence';
-export const DB_VERSION = 1;
+export const DB_VERSION = 3;
 
 export const STORE_PAGES = 'pages';
 export const STORE_GROUPS = 'groups';
 export const STORE_META = 'meta';
+export const STORE_QUEUE = 'queue';
 
 export type Intent = 'learning' | 'debugging' | 'job-hunting' | 'shopping' | 'entertainment' | 'reference';
+
+/**
+ * What the vector was actually derived from.
+ *
+ * Backfilled pages are embedded from a ~10-token title; captured pages from up
+ * to 8000 characters of body text. Those produce systematically different
+ * similarity distributions against the same query, so once both live in one
+ * corpus, *how a page was ingested* becomes a ranking signal unrelated to
+ * relevance. Recording it does not fix that — it makes the mix measurable
+ * instead of invisible. See §14.
+ */
+export type VectorSource = 'title' | 'text';
 
 /** CLAUDE.md §4. */
 export interface PageRecord {
@@ -30,11 +45,21 @@ export interface PageRecord {
   text: string;
   summary?: string;
   vector: Float32Array;
+  /** Which field `vector` was computed from. Never inferred from `text`
+   *  being non-empty: capture stores body text but falls back to the title
+   *  for the embedding when extraction returns nothing. */
+  vectorSource: VectorSource;
 
   format: Format;
   topics: string[];
   intent?: Intent;
   extractionTier: 1 | 2 | 3 | 4;
+  /**
+   * Optional by design: backfilled pages had no extraction to assess. Present
+   * only on live captures. §8's tier says *how* text was obtained; this says
+   * whether the result is usable.
+   */
+  extractionQuality?: ExtractionQuality;
 
   firstVisit: number;
   lastVisit: number;
@@ -94,8 +119,9 @@ export function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
+      const from = (event as IDBVersionChangeEvent).oldVersion;
 
       if (!db.objectStoreNames.contains(STORE_PAGES)) {
         const pages = db.createObjectStore(STORE_PAGES, { keyPath: 'id' });
@@ -108,6 +134,29 @@ export function openDatabase(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
+      }
+      // Capture queue. Keyed by page id so a re-visit before the drain
+      // replaces the pending entry instead of queueing the page twice.
+      if (!db.objectStoreNames.contains(STORE_QUEUE)) {
+        db.createObjectStore(STORE_QUEUE, { keyPath: 'id' });
+      }
+
+      // v3 adds vectorSource. Every record written before it came from the
+      // history backfill, which embeds titles — so stamping 'title' is a
+      // statement of fact, not a default. Doing it here rather than tolerating
+      // `undefined` at read time keeps the type honest.
+      if (from > 0 && from < 3 && request.transaction !== null) {
+        const pages = request.transaction.objectStore(STORE_PAGES);
+        pages.openCursor().onsuccess = (cursorEvent) => {
+          const cursor = (cursorEvent.target as IDBRequest<IDBCursorWithValue | null>).result;
+          if (cursor === null) return;
+          const record = cursor.value as PageRecord & { vectorSource?: VectorSource };
+          if (record.vectorSource === undefined) {
+            record.vectorSource = 'title';
+            cursor.update(record);
+          }
+          cursor.continue();
+        };
       }
     };
 
@@ -169,6 +218,37 @@ export async function getAllPages(db: IDBDatabase): Promise<PageRecord[]> {
 export async function getAllGroups(db: IDBDatabase): Promise<GroupRecord[]> {
   const tx = db.transaction(STORE_GROUPS, 'readonly');
   return promisify(tx.objectStore(STORE_GROUPS).getAll() as IDBRequest<GroupRecord[]>);
+}
+
+export async function enqueueCapture(db: IDBDatabase, item: QueueItem): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_QUEUE, 'readwrite');
+    tx.objectStore(STORE_QUEUE).put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('enqueue failed'));
+  });
+}
+
+export async function getQueue(db: IDBDatabase): Promise<QueueItem[]> {
+  const tx = db.transaction(STORE_QUEUE, 'readonly');
+  return promisify(tx.objectStore(STORE_QUEUE).getAll() as IDBRequest<QueueItem[]>);
+}
+
+export async function removeFromQueue(db: IDBDatabase, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_QUEUE, 'readwrite');
+    const store = tx.objectStore(STORE_QUEUE);
+    for (const id of ids) store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('dequeue failed'));
+  });
+}
+
+export async function getPage(db: IDBDatabase, id: string): Promise<PageRecord | null> {
+  const tx = db.transaction(STORE_PAGES, 'readonly');
+  const value = (await promisify(tx.objectStore(STORE_PAGES).get(id))) as PageRecord | undefined;
+  return value ?? null;
 }
 
 export async function putMeta<T extends { key: string }>(db: IDBDatabase, value: T): Promise<void> {

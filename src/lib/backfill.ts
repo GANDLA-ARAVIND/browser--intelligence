@@ -237,6 +237,7 @@ function toRecord(page: Page, vector: Float32Array): PageRecord {
     title: page.title,
     text: '', // §10: the history API returns no page content
     vector: new Float32Array(vector), // copy: subarray shares the batch buffer
+    vectorSource: 'title',
     format: classifyFormat(page.url),
     topics: [], // zero-shot classification is phase 3
     extractionTier: TITLE_ONLY_TIER,

@@ -64,7 +64,7 @@ check(
   (manifest.host_permissions ?? []).join(', ') || 'none'
 );
 
-const REQUIRED_PERMISSIONS = ['history', 'storage', 'offscreen'];
+const REQUIRED_PERMISSIONS = ['history', 'storage', 'offscreen', 'alarms'];
 const permissions = manifest.permissions ?? [];
 for (const permission of REQUIRED_PERMISSIONS) {
   check(permissions.includes(permission), `permission: ${permission}`);
@@ -82,6 +82,20 @@ check(manifest.background?.type === 'module', 'service worker is type: module', 
 
 for (const page of ['offscreen.html', 'dashboard.html']) {
   check(existsSync(join(DIST, page)), `page exists: ${page}`);
+}
+
+// Content scripts are classic scripts, not modules. An `import` statement in
+// the emitted file is a syntax error the moment Chrome injects it, and the
+// failure is silent from the extension's side — the page just never captures.
+for (const entry of manifest.content_scripts ?? []) {
+  for (const file of entry.js ?? []) {
+    const path = join(DIST, file);
+    check(existsSync(path), `content script exists: ${file}`);
+    if (!existsSync(path)) continue;
+    const source = readFileSync(path, 'utf8');
+    check(!/^\s*import\s/m.test(source), `${file} is not an ES module`, 'no top-level import');
+    check(!/^\s*export\s/m.test(source), `${file} has no export statements`);
+  }
 }
 
 // --- every local src/href in the built HTML resolves -------------------------

@@ -9,12 +9,13 @@
     "sanity": "tsx scripts/sanity.ts",
     "export-history": "node --no-warnings scripts/export-history.mjs",
     "fetch-model": "node scripts/fetch-model.mjs",
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.content.config.ts",
     "dev": "vite build --watch",
     "check-extension": "node scripts/check-extension.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@xenova/transformers": "^2.17.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

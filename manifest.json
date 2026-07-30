@@ -4,7 +4,12 @@
   "version": "0.1.0",
   "description": "Turns your browsing history into a searchable personal knowledge base. Everything runs on your machine.",
   "minimum_chrome_version": "116",
-  "permissions": ["history", "storage", "offscreen"],
+  "permissions": [
+    "history",
+    "storage",
+    "offscreen",
+    "alarms"
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -14,5 +19,18 @@
   },
   "action": {
     "default_title": "Open Browser Intelligence"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
 }
