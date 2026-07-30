@@ -109,22 +109,38 @@ function resetForNewPage(): void {
   captured = false;
 }
 
+/**
+ * Both halves are load-bearing. `visibilityState` catches a backgrounded tab;
+ * `document.hasFocus()` catches the whole Chrome window losing focus to
+ * another application, where the tab stays `visible` and `visibilitychange`
+ * never fires. Dropping either one leaks dwell.
+ */
 const isFocused = (): boolean => document.visibilityState === 'visible' && document.hasFocus();
 
 /**
- * Restart the elapsed clock whenever focus returns.
+ * Restart the elapsed clock whenever the *window or tab* focus state changes.
  *
  * `elapsed` is wall time since the previous tick, but Chrome throttles
  * `setInterval` in a hidden tab to roughly once a minute. Without this, the
  * first tick after refocusing credits the entire throttled gap as focused
  * time: measured, one tick turned ~0.5s of real attention into 60s of dwell
  * and tripped the 30s gate instantly.
+ *
+ * Deliberately **not** `capture: true`. Element `focus`/`blur` do not bubble,
+ * but a capture-phase window listener still sees them, so every click into a
+ * text field reset the clock and truncated that interval. Measured on a
+ * form-heavy page: 22% of dwell lost, and the 30s gate reached 25 seconds
+ * late. Window-targeted focus/blur reach a plain window listener at the target
+ * phase, which is exactly the scope wanted.
+ *
+ * `visibilitychange` fires at the document, so it is registered there.
  */
-for (const event of ['visibilitychange', 'focus', 'blur']) {
-  addEventListener(event, () => {
-    lastTick = performance.now();
-  }, { passive: true, capture: true });
-}
+const restartElapsedClock = (): void => {
+  lastTick = performance.now();
+};
+addEventListener('focus', restartElapsedClock, { passive: true });
+addEventListener('blur', restartElapsedClock, { passive: true });
+document.addEventListener('visibilitychange', restartElapsedClock, { passive: true });
 
 function markInput(): void {
   lastInput = Date.now();
