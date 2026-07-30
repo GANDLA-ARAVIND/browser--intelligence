@@ -511,6 +511,14 @@ then.
 Zero-shot classification, clustering, cluster labeling, topic promotion,
 session reconstruction.
 
+**Boilerplate will pollute the taxonomy if nothing is done first.** Privacy
+notices, cookie policies and recruitment-fraud warnings score at the *top* of
+the quality scale — they are perfect prose — while carrying nothing about what
+the user was doing. Structural quality cannot detect wrong-topic prose
+(DECISIONS.md). Clustering these produces a "privacy policy" topic spanning
+twenty unrelated employers that looks entirely legitimate. Decide the handling
+before promoting any topic.
+
 ### Phase 4 — Dashboard (week 4)
 React UI. v1 surfaces only — see §12.
 

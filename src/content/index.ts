@@ -111,6 +111,21 @@ function resetForNewPage(): void {
 
 const isFocused = (): boolean => document.visibilityState === 'visible' && document.hasFocus();
 
+/**
+ * Restart the elapsed clock whenever focus returns.
+ *
+ * `elapsed` is wall time since the previous tick, but Chrome throttles
+ * `setInterval` in a hidden tab to roughly once a minute. Without this, the
+ * first tick after refocusing credits the entire throttled gap as focused
+ * time: measured, one tick turned ~0.5s of real attention into 60s of dwell
+ * and tripped the 30s gate instantly.
+ */
+for (const event of ['visibilitychange', 'focus', 'blur']) {
+  addEventListener(event, () => {
+    lastTick = performance.now();
+  }, { passive: true, capture: true });
+}
+
 function markInput(): void {
   lastInput = Date.now();
 }
@@ -119,6 +134,8 @@ for (const event of ['scroll', 'mousemove', 'keydown', 'click', 'wheel', 'touchs
   addEventListener(event, markInput, { passive: true, capture: true });
 }
 
+const TICK_MS = 1000;
+
 /**
  * Dwell gates capture; activity gates the *number* we store. They differ
  * deliberately — a page can be focused and unread, and §9 is explicit that one
@@ -126,7 +143,9 @@ for (const event of ['scroll', 'mousemove', 'keydown', 'click', 'wheel', 'touchs
  */
 function tick(): void {
   const now = performance.now();
-  const elapsed = now - lastTick;
+  // Clamped as well as reset on refocus: a throttled or descheduled tick must
+  // never contribute more than the interval it represents.
+  const elapsed = Math.min(now - lastTick, TICK_MS * 1.5);
   lastTick = now;
 
   // Checked before the focus guard: an in-page navigation while the tab is
@@ -149,7 +168,7 @@ function tick(): void {
   }
 }
 
-setInterval(tick, 1000);
+setInterval(tick, TICK_MS);
 
 // --- extraction -------------------------------------------------------------
 
@@ -232,6 +251,18 @@ function extract(pageTextLength: number): Attempt {
 }
 
 async function capture(reason: string): Promise<void> {
+  // Invariant, re-checked at the point of no return. Both call sites gate on
+  // this already; the assertion exists because a leak here is silent — the
+  // page is simply indexed on attention it never received, and nothing in the
+  // stored record reveals that.
+  if (focusedMs < DWELL_THRESHOLD_MS) {
+    console.error(
+      `[content] capture blocked: dwell ${Math.round(focusedMs)}ms is below the ${DWELL_THRESHOLD_MS}ms threshold (${reason})`
+    );
+    captured = false; // let a later, legitimate crossing still capture
+    return;
+  }
+
   const excluded = await isExcluded();
   if (excluded !== null) {
     console.debug(`[content] skipped (${excluded})`);
