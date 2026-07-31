@@ -141,10 +141,26 @@ export function isBareUrlTitle(title: string): boolean {
   return HOST_WITH_PATH.test(title) || URL_QUERY.test(title) || HASH_FILENAME.test(title);
 }
 
-export function isJunkTitle(title: string): boolean {
+/**
+ * `original` is the title as the page served it; `title` may be the
+ * suffix-stripped form.
+ *
+ * The exact list is matched against **both**, and a stripped-only match is
+ * rejected. "Dashboard | Google Skills" is a real page: neither rule drops it
+ * alone, but stripping the derived boilerplate suffix leaves "Dashboard",
+ * which the exact list then kills. Requiring the original to agree is the
+ * narrower of the two available fixes — excluding stripped titles from exact
+ * matching entirely would also stop "Sign in - Google Accounts" → "Sign in"
+ * from being caught, which is a genuine hit. So: strip-then-match may only
+ * *confirm* a judgement the original supports, never create one.
+ */
+export function isJunkTitle(title: string, original: string = title): boolean {
   const candidate = title.trim();
   if (candidate.length === 0) return true;
-  if (JUNK_TITLE_EXACT.some((pattern) => pattern.test(candidate))) return true;
+
+  const raw = original.trim();
+  const exactHit = JUNK_TITLE_EXACT.some((pattern) => pattern.test(candidate));
+  if (exactHit && (candidate === raw || JUNK_TITLE_EXACT.some((pattern) => pattern.test(raw)))) return true;
   if (JUNK_TITLE_STRONG.some((pattern) => pattern.test(candidate))) return true;
   if (isBareUrlTitle(candidate)) return true;
   if (candidate.length > JUNK_PREFIX_MAX_LENGTH) return false;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Backfill } from './Backfill.js';
 import { Captures } from './Captures.js';
 import { PrivacySettings } from './PrivacySettings.js';
+import { WhatWasDropped } from './WhatWasDropped.js';
 import { Search } from './Search.js';
 import { sendMessage } from '../platform/browser.js';
 
@@ -100,6 +101,8 @@ export function App(): React.JSX.Element {
       <Backfill />
 
       <PrivacySettings />
+
+      <WhatWasDropped />
 
       <p className="note">
         Phase 2, step 1 — live capture, backfill and bare search. Search, the session timeline and topic

@@ -11,6 +11,7 @@
 
 import type { BlockingEvent } from './blocking.js';
 import type { QueueItem } from './capture.js';
+import type { FilterAuditSummary } from './filter.js';
 import type { Format } from './format.js';
 import type { ExtractionQuality } from './quality.js';
 
@@ -86,6 +87,11 @@ export interface BackfillSummary {
   stageMs: Record<string, number>;
   /** Main-thread stalls, attributed to the stage that caused them. */
   blocking: BlockingEvent[];
+  /**
+   * What the filters removed and why, in the units the pipeline used.
+   * Optional: runs before this field existed have no audit.
+   */
+  filterAudit?: FilterAuditSummary;
 }
 
 /**

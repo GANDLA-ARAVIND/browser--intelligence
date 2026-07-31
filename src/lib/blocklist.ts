@@ -125,12 +125,27 @@ const BLOCKED_DOMAINS: Array<[string, SensitiveCategory]> = [
 
 /**
  * Internal corporate tooling. Matched on host *shape* rather than a company
- * list, since every company's internal hostnames differ — this is the only
- * rule here that generalises rather than enumerating.
+ * list, since every company's internal hostnames differ.
+ *
+ * **`workday` and `servicenow` were removed.** They are HR SaaS *vendors*, and
+ * their hostnames appear on public careers portals — the opposite of internal
+ * tooling. The audit found 14 of 18 corporate blocks were job applications
+ * (`workday.wd5.myworkdayjobs.com`, `careers.servicenow.com`) during an active
+ * job search. `sso` was narrowed for the same reason: it caught
+ * `sso.yourlearning.ibm.com`, a learning platform.
+ *
+ * The honest position is that **the discriminator for "internal" is not in the
+ * domain name.** A vendor-hosted careers page and a vendor-hosted internal
+ * portal can share a hostname shape. Where no reliable rule exists, prefer
+ * under-blocking: a wrongly indexed corporate page is visible and recoverable
+ * via retroactive delete (§9), a wrongly blocked one is invisible forever.
  */
 const CORPORATE_HOST_PATTERNS: RegExp[] = [
-  /(^|\.)(intranet|internal|corp|vpn|sso|okta|onelogin|workday|servicenow)\./i,
+  /(^|\.)(intranet|internal|corp)\./i,
   /\.internal(\.|$)/i,
+  // Identity providers only when they are the whole host, not a subdomain
+  // prefix on someone's product: `okta.com` yes, `sso.somelearningsite.com` no.
+  /(^|\.)(okta|onelogin)\.(com|net)$/i,
   /(^|\.)(jira|confluence)\.[a-z0-9-]+\.(com|net|io)$/i,
 ];
 

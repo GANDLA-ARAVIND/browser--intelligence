@@ -13,7 +13,7 @@ import { DEFAULT_BLOCKED_CATEGORIES, type SensitiveCategory } from './blocklist.
 import { startBlockingMonitor, type BlockingEvent } from './blocking.js';
 import { collapseNearDuplicates, DEFAULT_DUPLICATE_THRESHOLD } from './dedupe.js';
 import { createEmbedder, EMBEDDING_BATCH_SIZE, EMBEDDING_DIM, type EmbedderOptions } from './embeddings.js';
-import { filterHistory } from './filter.js';
+import { filterHistory, summariseAudit, type FilterAuditSummary } from './filter.js';
 import { classifyFormat } from './format.js';
 import {
   clearGroups,
@@ -89,6 +89,8 @@ export interface BackfillOptions {
 
 /** §4: history gives a title and nothing else — no body text to extract. */
 const TITLE_ONLY_TIER = 3;
+/** §8 tier 4: no title at all, topic derived from the URL path. */
+const PATH_DERIVED_TIER = 4;
 
 export async function runBackfill(options: BackfillOptions): Promise<BackfillSummary> {
   const { visits, onProgress } = options;
@@ -129,12 +131,19 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
     );
     const pages = filtered.pages;
 
+    const auditSummary = summariseAudit(filtered);
+    if (!auditSummary.reconciles) {
+      console.error(
+        `[backfill] filter counts do not reconcile: ${auditSummary.unaccounted} rows dropped with no recorded reason. ` +
+          `A filter is removing pages that nothing reports.`
+      );
+    }
     progress.counts.kept = filtered.stats.kept;
     progress.counts.blocked = filtered.stats.droppedBlocked;
     emit({ detail: `${filtered.stats.kept} pages kept of ${visits.length}` });
 
     if (pages.length === 0) {
-      const summary = finish(startedAt, stageMs, filtered.stats.raw, 0, 0, filtered.stats.droppedBlocked, await monitor.stop());
+      const summary = finish(startedAt, stageMs, filtered.stats.raw, 0, 0, filtered.stats.droppedBlocked, await monitor.stop(), summariseAudit(filtered));
       emit({ stage: 'done', finishedAt: Date.now(), detail: 'nothing to embed' });
       return summary;
     }
@@ -211,7 +220,8 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
       filtered.stats.kept,
       groups.length,
       filtered.stats.droppedBlocked,
-      await monitor.stop()
+      await monitor.stop(),
+      summariseAudit(filtered)
     );
     await putMeta(db, summary);
 
@@ -240,7 +250,9 @@ function toRecord(page: Page, vector: Float32Array): PageRecord {
     vectorSource: 'title',
     format: classifyFormat(page.url),
     topics: [], // zero-shot classification is phase 3
-    extractionTier: TITLE_ONLY_TIER,
+    // A page whose embedText is not its title was rescued by path extraction,
+    // which is tier 4 by definition.
+    extractionTier: page.embedText === page.title ? TITLE_ONLY_TIER : PATH_DERIVED_TIER,
     // chrome.history.search reports only lastVisitTime. getVisits() would give
     // the true first visit but costs one call per URL — thousands of them.
     firstVisit: page.lastVisit,
@@ -257,7 +269,8 @@ function finish(
   kept: number,
   uniqueNodes: number,
   blocked: number,
-  blocking: BlockingEvent[]
+  blocking: BlockingEvent[],
+  filterAudit: FilterAuditSummary
 ): BackfillSummary {
   return {
     key: 'backfill',
@@ -269,5 +282,6 @@ function finish(
     durationMs: Date.now() - startedAt,
     stageMs,
     blocking,
+    filterAudit,
   };
 }

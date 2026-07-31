@@ -338,6 +338,64 @@ li[data-state="fail"] .dot {
   cursor: pointer;
 }
 
+.drop-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.6rem;
+}
+
+.drop-table th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.75rem;
+  padding-bottom: 0.35rem;
+}
+
+.drop-table th:first-child,
+.drop-table td:first-child {
+  text-align: left;
+}
+
+.drop-table td {
+  text-align: right;
+  padding: 0.25rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.drop-table td:last-child,
+.drop-table th:last-child {
+  text-align: left;
+  padding-left: 0.9rem;
+  font-size: 0.8125rem;
+}
+
+.drop-heading {
+  margin: 1.3rem 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.drop-list {
+  list-style: none;
+  margin: 0.3rem 0 0.9rem;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.drop-list li {
+  display: grid;
+  grid-template-columns: 3rem 1fr;
+  gap: 0.5rem;
+}
+
 .settings-intro {
   margin: 0 0 1rem;
 }
