@@ -42,6 +42,44 @@ export function normalizeUrl(raw: string): string | null {
   return u.toString();
 }
 
+/**
+ * Query params a media player rewrites *during* playback without the page
+ * becoming a different page.
+ *
+ * Not a tracking concern — these are stripped for a different reason and at a
+ * different point than `TRACKING_PARAM`, which is about storage identity. This
+ * set exists for **navigation detection**: the content script decides "is this
+ * still the same page" by comparing `pathname + search`, and YouTube rewrites
+ * `t` as the user seeks and `pp` as it cycles player flags. Every rewrite read
+ * as a navigation, which reset the dwell clock, so the 30s capture gate was
+ * never reached on exactly the long videos most worth capturing — a silent
+ * suppression, symptomless in the way §14 warns about.
+ *
+ * Deliberately general rather than YouTube-specific: `t`, `start`,
+ * `time_continue` and `end` are the common spelling of playback position
+ * across HTML5 players, Vimeo and Twitch.
+ *
+ * `v` is emphatically **not** here — it is the video's identity, and stripping
+ * it would make every video on YouTube look like the same page, turning this
+ * fix into a far worse version of the bug it repairs.
+ */
+export const VOLATILE_PLAYBACK_PARAM = /^(t|start|end|time_continue|pp|ab_channel|feature)$/i;
+
+/**
+ * `search` with playback-position params removed, for same-page comparison.
+ * Returns '' rather than '?' when nothing survives, so the empty case matches
+ * a URL that never had a query string.
+ */
+export function stableSearch(search: string): string {
+  if (search.length <= 1) return '';
+  const kept = new URLSearchParams();
+  for (const [key, value] of new URLSearchParams(search)) {
+    if (!VOLATILE_PLAYBACK_PARAM.test(key)) kept.append(key, value);
+  }
+  const rest = kept.toString();
+  return rest.length > 0 ? `?${rest}` : '';
+}
+
 export function isLocalHost(host: string): boolean {
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
   if (host === '::1' || host === '0.0.0.0' || host === 'host.docker.internal') return true;

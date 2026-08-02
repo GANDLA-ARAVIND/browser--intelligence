@@ -24,7 +24,14 @@ import {
   type MessageContext,
 } from '../platform/browser.js';
 import { isSensitive } from '../lib/blocklist.js';
-import { enqueueCapture, hashId, openDatabase } from '../lib/storage.js';
+import {
+  enqueueCapture,
+  getMeta,
+  hashId,
+  openDatabase,
+  putMeta,
+  type CaptureHealth,
+} from '../lib/storage.js';
 import { normalizeUrl, isLocalHost } from '../lib/url.js';
 import type { CapturedPage } from '../lib/capture.js';
 import { readHistoryWindows } from '../platform/history.js';
@@ -97,6 +104,28 @@ async function startBackfill(): Promise<AcceptedResponse> {
 }
 
 /**
+ * Read-modify-write of the capture-health record.
+ *
+ * Not held in a worker variable: the worker is torn down after ~30s idle, so
+ * anything it remembers is a lie the moment it sleeps (§14). IndexedDB is the
+ * only place this survives.
+ */
+async function recordHealth(patch: Partial<Omit<CaptureHealth, 'key'>>): Promise<void> {
+  try {
+    const db = await openDatabase();
+    const current = await getMeta<CaptureHealth>(db, 'capture-health');
+    await putMeta(db, {
+      key: 'capture-health',
+      lastCaptureAt: current?.lastCaptureAt ?? null,
+      extensionReloadedAt: current?.extensionReloadedAt ?? null,
+      ...patch,
+    });
+  } catch (error) {
+    console.error('[background] could not record capture health', error);
+  }
+}
+
+/**
  * Accepts a capture and queues it. Never embeds — that would block the worker
  * and die with it (§14).
  *
@@ -130,6 +159,11 @@ async function queueCapture(page: CapturedPage, senderIncognito: boolean): Promi
   const db = await openDatabase();
   await enqueueCapture(db, { ...page, id: hashId(normalized), queuedAt: Date.now() });
   console.log(`[background] queued ${page.url} (tier ${page.extractionTier}, ${page.text.length} chars)`);
+
+  // Recorded at *queue* time rather than after the drain: this timestamp
+  // answers "is capture reaching the extension at all", which is the failure
+  // that leaves no other trace. Drain problems show up as a non-empty queue.
+  await recordHealth({ lastCaptureAt: Date.now() });
 
   // Drain off the capture path, not on it.
   scheduleDrain();
@@ -221,6 +255,11 @@ async function wake(reason: string): Promise<void> {
 
 onInstalled(() => {
   console.log('[background] onInstalled');
+  // Fires on install, update *and* developer reload — which is exactly the
+  // event that orphans content scripts in every already-open tab. Stamping it
+  // lets the dashboard distinguish "capture is broken" from "your tabs are
+  // stale", which are the same symptom and different fixes.
+  void recordHealth({ extensionReloadedAt: Date.now() });
   void wake('onInstalled');
 });
 

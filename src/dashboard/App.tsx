@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Backfill } from './Backfill.js';
+import { CaptureHealth } from './CaptureHealth.js';
 import { Captures } from './Captures.js';
 import { PrivacySettings } from './PrivacySettings.js';
 import { WhatWasDropped } from './WhatWasDropped.js';
@@ -95,6 +96,8 @@ export function App(): React.JSX.Element {
       </section>
 
       <Search />
+
+      <CaptureHealth />
 
       <Captures />
 

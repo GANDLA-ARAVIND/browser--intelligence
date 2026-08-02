@@ -95,6 +95,27 @@ export interface BackfillSummary {
 }
 
 /**
+ * Whether capture is actually working, which nothing else in the schema
+ * reveals.
+ *
+ * A page that was never captured is indistinguishable from a page never
+ * visited (§14), so total capture failure is invisible by construction —
+ * measured, an orphaned content script silently dropped every capture across
+ * two rebuilds and nothing anywhere showed it. These two timestamps are the
+ * minimum needed to notice.
+ *
+ * `extensionReloadedAt` is what makes the diagnosis possible rather than just
+ * the symptom: reloading the extension orphans content scripts in every
+ * already-open tab, so a `lastCaptureAt` older than the last reload points
+ * squarely at stale tabs rather than at a broken pipeline.
+ */
+export interface CaptureHealth {
+  key: 'capture-health';
+  lastCaptureAt: number | null;
+  extensionReloadedAt: number | null;
+}
+
+/**
  * FNV-1a, 64-bit, hex. Synchronous — `crypto.subtle.digest` is async and would
  * make every id derivation a promise for no benefit. This is a storage key, not
  * a security primitive: it needs to be stable and well-distributed, nothing more.

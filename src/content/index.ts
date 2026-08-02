@@ -15,6 +15,7 @@ import {
   ACTIVITY_WINDOW_MS,
   capText,
   DWELL_THRESHOLD_MS,
+  TIER_ADAPTER,
   TIER_DOMAIN_ONLY,
   TIER_METADATA,
   TIER_READABILITY,
@@ -22,7 +23,21 @@ import {
   type ExtractionTier,
 } from '../lib/capture.js';
 import { assessExtraction, type ExtractionQuality } from '../lib/quality.js';
-import { isLocalHost } from '../lib/url.js';
+import { isLocalHost, stableSearch } from '../lib/url.js';
+import { tryYouTubeTranscript } from './youtube.js';
+
+/**
+ * Injection marker.
+ *
+ * `console.log`, not `console.debug`, and that distinction is load-bearing
+ * throughout this file: Chrome renders `console.debug` at **Verbose** level,
+ * which is hidden unless the user has ticked that box in the DevTools level
+ * dropdown. A full diagnostic round was spent on "the console shows nothing"
+ * when the real answer was that every line this file emitted was filtered out
+ * of the default view. Capture-path diagnostics are `log`; unrecoverable
+ * failures are `error`.
+ */
+console.log('[content] script injected', location.href);
 
 // --- §9 gate ----------------------------------------------------------------
 
@@ -62,6 +77,18 @@ let lastInput = Date.now();
 let captured = false;
 
 /**
+ * Set once `chrome.runtime` has gone away underneath this script.
+ *
+ * Reloading or updating the extension orphans every content script already
+ * injected into an open tab. The script keeps running — timers tick, dwell
+ * accrues, extraction still works — but every `chrome.*` call throws
+ * "Extension context invalidated" from then on, permanently, for the life of
+ * that tab. Nothing short of a tab reload recovers, so once this is true the
+ * only correct behaviour is to stop and say so loudly.
+ */
+let contextInvalidated = false;
+
+/**
  * SPA navigation.
  *
  * YouTube, LinkedIn, Reddit, GitHub and most modern sites change URL through
@@ -96,10 +123,16 @@ let currentKey = navigationKey();
  * `#section-2` and `#section-3` collapse to one record, so treating an anchor
  * click as a new page would inflate visitCount for no benefit. Hash *routes*
  * (`#/inbox`) are real navigation and are kept.
+ *
+ * Playback-position params are excluded for a sharper reason (see
+ * `stableSearch`): YouTube rewrites `?t=` while a video plays, which read as a
+ * navigation on every seek, reset the dwell clock, and meant the 30s gate was
+ * never reached on a long video. `v` survives stripping, so switching videos
+ * still registers as a new page — verified below.
  */
 function navigationKey(): string {
   const route = location.hash.startsWith('#/') ? location.hash : '';
-  return location.pathname + location.search + route;
+  return location.pathname + stableSearch(location.search) + route;
 }
 
 function resetForNewPage(): void {
@@ -142,8 +175,15 @@ addEventListener('focus', restartElapsedClock, { passive: true });
 addEventListener('blur', restartElapsedClock, { passive: true });
 document.addEventListener('visibilitychange', restartElapsedClock, { passive: true });
 
-function markInput(): void {
-  lastInput = Date.now();
+/**
+ * `isTrusted` excludes synthetic events — the YouTube transcript adapter
+ * below dispatches a real `click()` on the page to open the transcript panel,
+ * and without this check that self-inflicted click would mark the user as
+ * "active" for the next `ACTIVITY_WINDOW_MS`, inflating `activeSeconds` on
+ * attention the user never gave (§9).
+ */
+function markInput(event: Event): void {
+  if (event.isTrusted) lastInput = Date.now();
 }
 
 for (const event of ['scroll', 'mousemove', 'keydown', 'click', 'wheel', 'touchstart']) {
@@ -158,6 +198,11 @@ const TICK_MS = 1000;
  * inflated duration makes every duration untrustworthy.
  */
 function tick(): void {
+  // Orphaned scripts cannot deliver anything; ticking on would only accrue
+  // dwell nobody can ever receive. The interval is cleared when this is set,
+  // so this guard is belt and braces against a tick already in flight.
+  if (contextInvalidated) return;
+
   const now = performance.now();
   // Clamped as well as reset on refocus: a throttled or descheduled tick must
   // never contribute more than the interval it represents.
@@ -168,9 +213,9 @@ function tick(): void {
   // backgrounded still means the previous page's dwell must not carry over.
   const key = navigationKey();
   if (key !== currentKey) {
+    console.log(`[content] in-page navigation, dwell reset: ${currentKey} → ${key}`);
     currentKey = key;
     resetForNewPage();
-    console.debug('[content] in-page navigation, dwell reset');
     return;
   }
 
@@ -184,7 +229,7 @@ function tick(): void {
   }
 }
 
-setInterval(tick, TICK_MS);
+const tickTimer = setInterval(tick, TICK_MS);
 
 // --- extraction -------------------------------------------------------------
 
@@ -203,7 +248,7 @@ function tryReadability(): string {
     const clone = document.cloneNode(true) as Document;
     return new Readability(clone).parse()?.textContent?.trim() ?? '';
   } catch (error) {
-    console.debug('[content] readability threw, falling through', error);
+    console.log('[content] readability threw, falling through', error);
     return '';
   }
 }
@@ -236,13 +281,33 @@ function tryDomain(): string {
  * though both sit under the length floor.
  *
  * The returned tier is the one that actually **supplied** the text.
+ *
+ * Tier 1 is awaited before the synchronous rungs run, not raced against them:
+ * it is the only rung that opens UI to read (the transcript panel), so it
+ * needs to resolve — or time out — before anything else touches the page.
+ * `tryYouTubeTranscript` already no-ops on every non-YouTube page, so this
+ * costs nothing there.
+ *
+ * `allowSiteAdapter` is false on the `pagehide` path. That capture is racing
+ * page teardown with no fixed budget — Chrome can discard the page at any
+ * point after the event fires — and the adapter's up-to-2.5s wait for the
+ * transcript panel to render would burn exactly the window `sendMessage`
+ * needs. Losing tier 1 there still leaves Readability; losing the whole
+ * capture would not, and would do it silently (§14).
  */
-function extract(pageTextLength: number): Attempt {
+async function extract(pageTextLength: number, allowSiteAdapter: boolean): Promise<Attempt> {
   const attempts: Attempt[] = [];
 
-  // Thunks, not values: a rung must not run unless the ladder reaches it. Step
-  // 2 adds tier-1 site adapters that fetch transcripts, and eagerly invoking
-  // those on every page would be a real cost, not a rounding error.
+  console.log(`[content] extract: allowSiteAdapter=${allowSiteAdapter}`);
+  const transcript = allowSiteAdapter ? capText(await tryYouTubeTranscript()) : '';
+  if (transcript.length > 0) {
+    const quality = assessExtraction(transcript, pageTextLength);
+    const attempt: Attempt = { text: transcript, tier: TIER_ADAPTER, quality };
+    if (quality.verdict !== 'poor') return attempt;
+    attempts.push(attempt);
+  }
+
+  // Thunks, not values: a rung must not run unless the ladder reaches it.
   const rungs: Array<[ExtractionTier, () => string]> = [
     [TIER_READABILITY, tryReadability],
     [TIER_METADATA, tryMetadata],
@@ -281,14 +346,16 @@ async function capture(reason: string): Promise<void> {
 
   const excluded = await isExcluded();
   if (excluded !== null) {
-    console.debug(`[content] skipped (${excluded})`);
+    console.log(`[content] skipped (${excluded})`);
     return;
   }
 
   // Compared against the page's own visible text, so "Readability found 500
   // chars" can be distinguished from "the page only had 500 chars".
   const pageTextLength = (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().length;
-  const { text, tier, quality } = extract(pageTextLength);
+  const allowSiteAdapter = reason !== 'pagehide';
+  console.log(`[content] capture(${reason}): allowSiteAdapter=${allowSiteAdapter}`);
+  const { text, tier, quality } = await extract(pageTextLength, allowSiteAdapter);
 
   const payload: CapturedPage = {
     url: location.href,
@@ -301,20 +368,51 @@ async function capture(reason: string): Promise<void> {
     quality,
   };
 
+  // The delivery call. Everything upstream of here is wasted if this fails, so
+  // no failure on this path may be silent.
+  //
+  // This was previously `catch {}` with a comment claiming "the page is not
+  // lost — a return visit re-captures it". **That reasoning was wrong for the
+  // dominant failure**, and the empty catch is the purest form of the
+  // suppression class in §14: the capture vanished with no log, no counter and
+  // no UI trace. A worker mid-restart does recover on a return visit; an
+  // *invalidated context* never does, because the orphaned script cannot reach
+  // the extension again for the life of the tab. Both were being swallowed
+  // identically, so a permanent, total capture failure looked exactly like a
+  // transient one — measured: every capture between two dev rebuilds was lost
+  // with nothing anywhere to show it.
   try {
     await chrome.runtime.sendMessage({ target: 'background', type: 'CAPTURE_PAGE', page: payload });
-    console.debug(
+    console.log(
       `[content] captured via ${reason}: tier ${tier}, ${text.length} chars, quality ${quality.verdict} (${quality.score})`
     );
-  } catch {
-    // The worker may be mid-restart. The page is not lost — a return visit
-    // re-captures it, and this path must never surface an error to the page.
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+
+    if (/Extension context invalidated|Extension context was invalidated/i.test(detail)) {
+      contextInvalidated = true;
+      clearInterval(tickTimer);
+      // console.error, not log: this is the one failure that must be visible
+      // at the console's default level, without Verbose enabled.
+      console.error(
+        `[content] EXTENSION CONTEXT INVALIDATED — this tab can no longer capture anything. ` +
+          `The extension was reloaded or updated after this page loaded, which orphans the ` +
+          `content script permanently. Reload this tab to resume capturing. ` +
+          `The capture of "${document.title}" was lost.`
+      );
+      return;
+    }
+
+    // Everything else — a worker mid-restart being the common case. Genuinely
+    // recoverable on a return visit, but still reported rather than dropped.
+    console.error(`[content] capture delivery failed (${reason}), page not stored: ${detail}`);
   }
 }
 
 // Re-check on the way out: a page closed at 25s still had 25s of attention, but
 // §7 sets the bar at 30s and we honour it rather than special-casing.
 addEventListener('pagehide', () => {
+  if (contextInvalidated) return;
   if (!captured && focusedMs >= DWELL_THRESHOLD_MS) {
     captured = true;
     void capture('pagehide');

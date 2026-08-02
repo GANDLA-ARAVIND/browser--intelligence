@@ -23,6 +23,13 @@ const check = (ok, label, detail = '') => {
   if (!ok) failures.push(label);
 };
 
+/** Every file under `dir`, recursively. */
+const walkFiles = (dir) =>
+  readdirSync(dir).flatMap((entry) => {
+    const full = join(dir, entry);
+    return statSync(full).isDirectory() ? walkFiles(full) : [full];
+  });
+
 console.log('\nExtension preflight');
 console.log('─'.repeat(74));
 
@@ -87,6 +94,27 @@ for (const page of ['offscreen.html', 'dashboard.html']) {
 // Content scripts are classic scripts, not modules. An `import` statement in
 // the emitted file is a syntax error the moment Chrome injects it, and the
 // failure is silent from the extension's side — the page just never captures.
+/**
+ * Behaviour the content script must still contain after bundling.
+ *
+ * Existence and syntax checks alone would pass a truncated, empty or
+ * half-tree-shaken content.js — and a content script that loads but does
+ * nothing is the worst possible failure here, because capture stops with no
+ * error anywhere and a page that was never captured looks exactly like a page
+ * never visited (§14). These are the four things whose absence means capture
+ * cannot happen at all.
+ *
+ * Matched against the *minified* output, so every pattern keys on a string
+ * literal or an API name that survives minification — never on an identifier,
+ * which gets renamed.
+ */
+const CONTENT_ENTRY_MARKERS = [
+  [/setInterval\s*\(/, 'dwell timer registered'],
+  [/["'`]pagehide["'`]/, 'pagehide capture listener'],
+  [/["'`]CAPTURE_PAGE["'`]/, 'CAPTURE_PAGE delivery message'],
+  [/["'`]visibilitychange["'`]/, 'focus/visibility tracking'],
+];
+
 for (const entry of manifest.content_scripts ?? []) {
   for (const file of entry.js ?? []) {
     const path = join(DIST, file);
@@ -95,6 +123,32 @@ for (const entry of manifest.content_scripts ?? []) {
     const source = readFileSync(path, 'utf8');
     check(!/^\s*import\s/m.test(source), `${file} is not an ES module`, 'no top-level import');
     check(!/^\s*export\s/m.test(source), `${file} has no export statements`);
+
+    for (const [pattern, label] of CONTENT_ENTRY_MARKERS) {
+      check(pattern.test(source), `${file} contains ${label}`);
+    }
+
+    // A content build that silently emitted almost nothing would satisfy every
+    // marker above only by accident; a size floor catches the rest.
+    const kb = statSync(path).size / 1024;
+    check(kb > 5, `${file} is not truncated`, `${kb.toFixed(1)} KB`);
+
+    // Stale-build guard. `npm run build` runs two vite passes and the content
+    // pass is the second; a failure there leaves the *previous* content.js in
+    // place while the main build's output is fresh, so dist/ looks built and
+    // the extension runs yesterday's capture logic.
+    const SRC = fileURLToPath(new URL('../src', import.meta.url));
+    const newestSource = walkFiles(SRC)
+      .filter((f) => /\.(ts|tsx)$/.test(f))
+      .reduce((newest, f) => Math.max(newest, statSync(f).mtimeMs), 0);
+    const builtAt = statSync(path).mtimeMs;
+    check(
+      builtAt >= newestSource,
+      `${file} is newer than its sources`,
+      builtAt >= newestSource
+        ? `built ${new Date(builtAt).toLocaleTimeString()}`
+        : `STALE — source changed at ${new Date(newestSource).toLocaleTimeString()}, build is from ${new Date(builtAt).toLocaleTimeString()}`
+    );
   }
 }
 
@@ -115,12 +169,7 @@ for (const page of ['offscreen.html', 'dashboard.html']) {
 }
 
 // --- nothing that would trip Chrome's MV3 loader -----------------------------
-const walk = (dir) =>
-  readdirSync(dir).flatMap((entry) => {
-    const full = join(dir, entry);
-    return statSync(full).isDirectory() ? walk(full) : [full];
-  });
-const built = walk(DIST);
+const built = walkFiles(DIST);
 const jsFiles = built.filter((file) => file.endsWith('.js'));
 check(jsFiles.length > 0, 'javascript emitted', `${jsFiles.length} files`);
 
