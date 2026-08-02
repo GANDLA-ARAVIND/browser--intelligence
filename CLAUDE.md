@@ -499,13 +499,22 @@ coverage, and `MoonshotAI/Kimi-K3` returned 7,998 chars of real README. Only
 profile and sub-tab pages fail there, and the ladder already demotes them (the
 Agents tab correctly fell to tier 3 at 0.68), so no adapter is warranted.
 
-**Step 2 must include a measurement, not only the extraction ladder.** Once
-capture is running, the corpus holds title-derived and text-derived vectors
-side by side (§14). Compare query-to-title against query-to-text similarity
-distributions **on the same pages**, and re-check the two constants calibrated
-on titles — the 0.97 collapse threshold and the 0.194 within-topic median.
-Phase 3 clusters this mixed corpus, so the numbers have to be trusted before
-then.
+**Step 2's measurement is done, and the cap stays at 64 tokens.** The corpus
+holds title- and text-derived vectors side by side (§14), but both truncate to
+the same 64-token window before embedding, so the short-title-vs-long-text gap
+this step set out to measure turned out not to exist at the shipped cap.
+Three conditions were compared on the same 107 pages — title@64, text@64
+(current), text@256/512 — and raising the cap made things worse, not better:
+peak query similarity fell monotonically (0.942 → 0.788) while the bulk of the
+distribution barely moved, and embedding cost scaled to ~12 minutes at 512
+tokens for a corpus the size already measured for blocking (§14), 12× the
+64-token cost for a worse best match on most queries. **`EMBEDDING_MAX_TOKENS`
+is not changing.** The 0.97 collapse threshold is verified safe across all four
+conditions (0.35–0.45 margin in every case). The 0.194/0.021 within-/cross-topic
+medians remain uncalibrated for text vectors in production — the 107-page
+sample used here is too small and topically narrow to set a production
+threshold from directly; recalibrate once real captures accumulate at scale.
+See DECISIONS.md for the full measurement.
 
 ### Phase 3 — Intelligence (week 3)
 Zero-shot classification, clustering, cluster labeling, topic promotion,
@@ -635,8 +644,8 @@ true now* and *what you must do*.
 | An inapplicable metric component must be **dropped and its weight redistributed**, never scored as zero | Scoring a signal that does not exist for the input at zero is indistinguishable from measuring it and finding nothing. Thai prose has no sentence terminators at all, so a zeroed terminator component scored real Thai writing at 0.29 and rejected it. The same mistake was made twice in one function: the stopword component was already being excluded for non-Latin text while the terminator component was still being zeroed. Components now carry weights that are summed only over those that apply |
 | The good/poor boundary is calibrated on synthetic reconstructions and is **not settled** | Same provenance as the Phase 0 fixture, and the same warning applies: it will need retuning on real captures. Already visibly imperfect — on the NeetCode case the ladder picks tier 2 (0.67) over the more informative tier 3 (0.62), because both fall under the 400-char floor and the shorter announcement banner has punchier sentence structure. Deliberately **not** tuned to fix that, since tuning a threshold against reconstructions is the exact error this row exists to warn about. Retune against stored `extractionQuality` once real captures accumulate |
 | **Stopword ratio measures "contains function words", not "is prose" — repetition satisfies the first without the second** | A Naukri page repeating `"Prep for this interview"` five times contributed *for* and *this* ten times and scored **0.324, inside prose range**, for a wall of UI labels. Fixed by computing the ratio over the **unique token set**, so a repeated template contributes each function word once: the same text now scores **0.10**, and the verdict moves `weak 0.568` → `poor 0.24`. The type-token ratio (0.676) was already a repetition signal sitting unused next to a metric being fooled by repetition. **General rule: any frequency-based text metric must be checked for repetition sensitivity** — templated UI is the common case, and it inflates every raw-count statistic |
-| **The corpus is becoming heterogeneous, and ingestion route is leaking into ranking** | Backfilled pages are embedded from a ~10-token title; captured pages from up to 8000 characters of body text. Query-to-short-title and query-to-long-text similarity distributions differ systematically, so once both live in one index, **whether a page happened to be captured or only backfilled becomes a ranking signal unrelated to relevance** — an artifact of ingestion history, invisible in the results. `PageRecord.vectorSource` (`'title' \| 'text'`) now records which, so the mix is measurable rather than invisible; DB v3 stamps every pre-existing record `'title'`, which is a statement of fact since everything written before it came from the backfill. **Not fixed.** Measure in Phase 2 step 2: query-to-title vs query-to-text similarity distributions over the *same* pages. Likely resolutions are storing both vectors per page, or always embedding the title and treating body text as a separate searchable field |
-| Constants calibrated on titles do not transfer to body text | The 0.97 collapse threshold and the measured 0.194 within-topic / 0.021 cross-topic medians were **all title-to-title measurements**. Neither has been checked against text-derived vectors, so both are unverified on any captured page — the same class of error as §5's unverified 0.40 zero-shot threshold, and it now applies to constants already in use rather than to one not yet relied on. Re-measure before Phase 3 clusters a mixed corpus |
+| **Ingestion-route heterogeneity — measured, no action needed** | Backfilled pages embed a ~10-token title; captured pages store up to 8000 characters but `EMBEDDING_MAX_TOKENS` (64, below) truncates both routes to the same window before embedding. Measured directly over 15 queries × 107 pages: query-to-title and query-to-text pooled similarity distributions are nearly identical (mean 0.164 vs 0.163, median 0.142 vs 0.151). `PageRecord.vectorSource` still records which route a page took, but the ranking bias this row originally warned about does not materialize at the shipped cap. **Resolved.** See DECISIONS.md for the full three-condition measurement and why the cap is staying at 64 |
+| The 0.97 collapse threshold does not transfer to body text by assumption — now verified that it does in practice | Title-to-title was the only measurement behind it. Checked directly across title@64, text@64, text@256 and text@512: the threshold holds with 0.35–0.45 margin above the worst cross-topic pair in every condition. **Verified.** The 0.194/0.021 within-/cross-topic medians remain a separate, open question — measured to shift by up to 67% between text@64 and text@512 on the same corpus (DECISIONS.md), so they still need calibrating against real captures at production scale before Phase 3 relies on them |
 | Bare-URL titles are junk; a slash alone does not make a URL | Chrome falls back to the URL when a page serves no `<title>`, and those tokenize into hundreds of wordpieces — the 875-token offender was `cf.legacypoint.site/middle.html?cs=…`. No title means no topic, the same rationale as the other junk tiers. **The rule must require a dotted host before the slash:** a first version keyed on "spaceless ASCII containing `/`" also matched `GANDLA-ARAVIND/WATT-WISE-PROJECT`, which is one of the most informative titles in the corpus and anchors a real 136-page cluster. It must also require ASCII, or it deletes every Chinese, Japanese and Thai title — the same trap as the ASCII-only `\W` that once ate Telugu |
 | Titles are truncated to 64 tokens at the *token* level, never the word level | A word-level cap measured cosine **1.0000** against the untruncated vector on eight of the ten worst offenders, which looked like a perfect result and was worthless: those titles are unbroken URLs with no whitespace, so it cut nothing. Token-level truncation moves the worst vector to 0.19 cosine — but only on junk URLs, and 0.90–0.99 on real titles. 64 leaves 99.8% of titles untouched. Enforced via `tokenizer.model_max_length` inside `createEmbedder`, so every caller inherits it |
 | **Blocking scales with batch size, not with stage** | Measured in the extension at ~5,200 pages. Embed blocks **115.4s of its 133.8s stage — 86% — across 153 stalls, longest 16.5s**; that single stall exceeds collapse's entire 11.6s block. An earlier claim here that embed "never freezes the thread" was **wrong**: the per-batch IndexedDB `await` yields between batches, which prevents *one* continuous freeze but not 153 separate ones. The rule that actually holds: per page, embed is ~25ms (133.8s / 5,216), so live capture of a single page is harmless; a batch of 32 blocks ~0.75s; a synchronous pass over the whole corpus blocks for as long as it takes. **The danger is any synchronous pass over the whole corpus, whatever the stage it sits in.** Collapse is the worst case because it is unbroken *and* quadratic |
@@ -680,14 +689,18 @@ true now* and *what you must do*.
   setup" returned 8 of 20 rows as variants of one page. Lowering the collapse
   threshold is the wrong fix — it would over-merge genuinely distinct pages —
   so this needs diversity in ranking, not in deduplication.
-- **Queries are matched term-by-term, not compositionally.** A bi-encoder over
-  short titles has no mechanism to bind terms together, so "that DSA video in
-  Telugu" ranked a Telugu music channel (0.626) above the actual DSA roadmap
-  videos (0.601): each term matched something, and the wrong page matched one
-  term strongly. This is inherent to the model class and the input length, not
-  a tuning error. It should improve when Phase 2 replaces titles with page
-  content, and the README should not promise natural-language question
-  answering before then.
+- **Queries are matched term-by-term, not compositionally, and more page
+  content does not fix it.** A bi-encoder over short titles has no mechanism to
+  bind terms together, so "that DSA video in Telugu" ranked a Telugu music
+  channel (0.626) above the actual DSA roadmap videos (0.601): each term
+  matched something, and the wrong page matched one term strongly. This was
+  once expected to improve once Phase 2 replaced titles with page content;
+  measured directly instead (DECISIONS.md), embedding more text made it
+  *worse* — "telugu job search youtube video" correctly matched a job-search
+  video at title and text@64, then switched to an unrelated personal-finance
+  vodcast at text@256/512. This is inherent to the model class and the input
+  length, not a gap more context closes. The README should not promise
+  natural-language question answering.
 - **Backfilled sessions are approximate; live-captured ones are exact.**
   `chrome.history.search()` returns only `lastVisitTime`, so every backfilled
   page is stored with `firstVisit === lastVisit` — a page read across three
