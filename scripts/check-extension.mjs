@@ -158,6 +158,44 @@ for (const entry of manifest.content_scripts ?? []) {
   }
 }
 
+/**
+ * Every stage the backfill can time must be declared in `TIMED_STAGES`, which
+ * is what the dashboard renders from.
+ *
+ * `time()` is typed to `TimedStage`, so this is belt and braces over the
+ * compiler — but the failure it guards against shipped once and was invisible:
+ * clustering ran, recorded its duration and produced 104 clusters while the
+ * timings table filtered the row out, because the dashboard held its own copy
+ * of the stage list. A report driven by a hardcoded list can only show
+ * presence, never absence (§14), so the list is checked against the code that
+ * feeds it.
+ */
+{
+  const SRC = fileURLToPath(new URL('../src', import.meta.url));
+  const backfillSrc = readFileSync(join(SRC, 'lib/backfill.ts'), 'utf8');
+
+  const declared = backfillSrc.match(/export const TIMED_STAGES\s*=\s*\[([^\]]*)\]/);
+  const declaredStages = declared
+    ? [...declared[1].matchAll(/['"`]([^'"`]+)['"`]/g)].map((m) => m[1])
+    : [];
+  check(declaredStages.length > 0, 'TIMED_STAGES is declared in backfill.ts', declaredStages.join(', '));
+
+  const timed = [...backfillSrc.matchAll(/\btime\(\s*['"`]([^'"`]+)['"`]/g)].map((m) => m[1]);
+  const undeclared = [...new Set(timed)].filter((stage) => !declaredStages.includes(stage));
+  check(
+    undeclared.length === 0,
+    'every timed stage is in TIMED_STAGES',
+    undeclared.length === 0 ? `${new Set(timed).size} stages` : `MISSING: ${undeclared.join(', ')}`
+  );
+
+  // The dashboard must not reintroduce its own copy of the list.
+  const dashSrc = readFileSync(join(SRC, 'dashboard/Backfill.tsx'), 'utf8');
+  check(
+    /STAGE_ORDER\s*=\s*TIMED_STAGES/.test(dashSrc),
+    'dashboard renders from TIMED_STAGES, not a local copy'
+  );
+}
+
 // --- every local src/href in the built HTML resolves -------------------------
 for (const page of ['offscreen.html', 'dashboard.html', 'popup.html']) {
   const file = join(DIST, page);

@@ -78,6 +78,14 @@ export async function createEmbedder(options: EmbedderOptions = {}): Promise<Emb
   if (options.localModelPath !== undefined) {
     env.localModelPath = options.localModelPath;
     env.allowLocalModels = true;
+    // transformers.js caches fetched weights in the Cache API, which rejects
+    // `chrome-extension://` requests outright — "Failed to execute 'put' on
+    // 'Cache': Request scheme 'chrome-extension' is unsupported". Harmless,
+    // because the weights ship in the package and are read from disk every
+    // time anyway, but it surfaces as a red console error that reads like a
+    // model-loading failure. There is nothing to cache here: the cache exists
+    // to avoid re-downloading, and this build never downloads.
+    env.useBrowserCache = false;
     // The hard guarantee: with this false, transformers.js never issues a
     // network request. A missing file becomes an error rather than a silent
     // download, which is what makes "no network on first load" verifiable

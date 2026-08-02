@@ -46,6 +46,20 @@ export type BackfillStage =
   | 'error';
 
 /**
+ * Every stage `time()` can record, in run order.
+ *
+ * **The single source of truth for the timings report** (§14). This exists as
+ * a typed constant rather than a hardcoded list in the dashboard because the
+ * dashboard once carried its own copy: `cluster` ran, wrote its duration, and
+ * the table filtered it out because the copy had never been updated — the
+ * stage was invisible while working perfectly. `time()` accepts only these
+ * names, so adding a stage without adding it here is a compile error rather
+ * than a silently missing row.
+ */
+export const TIMED_STAGES = ['filter', 'model', 'embed', 'collapse', 'write-groups', 'cluster'] as const;
+export type TimedStage = (typeof TIMED_STAGES)[number];
+
+/**
  * Clustering parameters (§5). Swept on the real mixed corpus and left at the
  * Phase 0 defaults: 91 clusters / 34.3% noise / largest 4.8%.
  *
@@ -114,7 +128,7 @@ const PATH_DERIVED_TIER = 4;
 export async function runBackfill(options: BackfillOptions): Promise<BackfillSummary> {
   const { visits, onProgress } = options;
   const startedAt = Date.now();
-  const stageMs: Record<string, number> = {};
+  const stageMs: Partial<Record<TimedStage, number>> = {};
   const progress = idleProgress();
   progress.startedAt = startedAt;
   progress.counts.rawRows = visits.length;
@@ -129,11 +143,20 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
     onProgress({ ...progress, counts: { ...progress.counts } });
   };
 
-  const time = async <T>(name: string, fn: () => Promise<T> | T): Promise<T> => {
+  /**
+   * `finally`, not after the await: a stage that throws still ran, still
+   * consumed that time, and its duration is exactly what someone diagnosing
+   * the failure needs. Recording only on success meant a failed stage vanished
+   * from the report entirely, which is indistinguishable from never having
+   * been reached (§14).
+   */
+  const time = async <T>(name: TimedStage, fn: () => Promise<T> | T): Promise<T> => {
     const began = performance.now();
-    const result = await fn();
-    stageMs[name] = Math.round(performance.now() - began);
-    return result;
+    try {
+      return await fn();
+    } finally {
+      stageMs[name] = Math.round(performance.now() - began);
+    }
   };
 
   try {
@@ -251,7 +274,11 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
     // the weekly recompute will retry from.
     emit({ stage: 'clustering', done: 0, total: groups.length, detail: `clustering ${groups.length} nodes` });
     try {
-      await time('cluster', async () => {
+      // The timed callback does the *work* and returns what the summary needs.
+      // The summary itself is written after `time()` returns, because
+      // `stageMs['cluster']` does not exist until then — reading it inside the
+      // callback stored a duration of 0 on every successful run.
+      const outcome = await time('cluster', async () => {
         const { clusters, noise } = await clusterByMutualKnnChunked(repMatrix, groups.length, {
           k: CLUSTER_KNN,
           sharedMin: CLUSTER_SHARED,
@@ -276,23 +303,23 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
         });
 
         await replaceClusters(db, records, pageIdToCluster);
+        return { clusterCount: records.length, noisePages: expandGroups(groups, noise).length };
+      });
 
-        const clusteringSummary: ClusteringSummary = {
-          key: 'clustering',
-          completedAt: Date.now(),
-          nodes: groups.length,
-          clusters: records.length,
-          unclusteredPages: await countUnclusteredPages(db),
-          durationMs: stageMs['cluster'] ?? 0,
-        };
-        await putMeta(db, clusteringSummary);
+      await putMeta(db, {
+        key: 'clustering',
+        completedAt: Date.now(),
+        nodes: groups.length,
+        clusters: outcome.clusterCount,
+        unclusteredPages: await countUnclusteredPages(db),
+        durationMs: stageMs['cluster'] ?? 0,
+      } satisfies ClusteringSummary);
 
-        emit({
-          stage: 'clustering',
-          done: groups.length,
-          total: groups.length,
-          detail: `${records.length} clusters, ${expandGroups(groups, noise).length} pages unclustered`,
-        });
+      emit({
+        stage: 'clustering',
+        done: groups.length,
+        total: groups.length,
+        detail: `${outcome.clusterCount} clusters, ${outcome.noisePages} pages unclustered`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

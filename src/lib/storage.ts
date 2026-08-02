@@ -9,6 +9,7 @@
  * no JSON round-trip, no precision loss, no 4× size blow-up.
  */
 
+import type { TimedStage } from './backfill.js';
 import type { BlockingEvent } from './blocking.js';
 import type { QueueItem } from './capture.js';
 import type { FilterAuditSummary } from './filter.js';
@@ -136,7 +137,7 @@ export interface BackfillSummary {
   uniqueNodes: number;
   blocked: number;
   durationMs: number;
-  stageMs: Record<string, number>;
+  stageMs: Partial<Record<TimedStage, number>>;
   /** Main-thread stalls, attributed to the stage that caused them. */
   blocking: BlockingEvent[];
   /**

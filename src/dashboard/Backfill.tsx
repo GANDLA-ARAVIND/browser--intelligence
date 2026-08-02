@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { idleProgress, type BackfillProgress, type BackfillStage } from '../lib/backfill.js';
+import { idleProgress, TIMED_STAGES, type BackfillProgress, type BackfillStage } from '../lib/backfill.js';
 import { summariseBlocking } from '../lib/blocking.js';
-import { getMeta, openDatabase, type BackfillSummary } from '../lib/storage.js';
+import { getMeta, openDatabase, type BackfillSummary, type ClusteringSummary } from '../lib/storage.js';
 import { sendMessage } from '../platform/browser.js';
 
 /** §10: this screen is what the user sees 60 seconds after install. */
@@ -31,7 +31,14 @@ const ACTIVE: BackfillStage[] = [
 const POLL_MS = 400;
 
 /** Stage order for display; `finish` writes whichever ones ran. */
-const STAGE_ORDER = ['filter', 'model', 'embed', 'collapse', 'write-groups'] as const;
+/**
+ * Imported, never re-declared. This file used to carry its own copy of the
+ * stage list, and when `cluster` was added to the pipeline the copy was not
+ * updated — clustering ran, recorded its duration, produced 104 clusters, and
+ * the table filtered the row out. The stage was invisible while working
+ * perfectly (§14).
+ */
+const STAGE_ORDER = TIMED_STAGES;
 
 /** The Phase 0 harness on the same corpus, for comparison. */
 const NODE_BASELINE_MS: Partial<Record<string, number>> = {
@@ -45,6 +52,7 @@ export function Backfill(): React.JSX.Element {
   const [starting, setStarting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [summary, setSummary] = useState<BackfillSummary | null>(null);
+  const [clustering, setClustering] = useState<ClusteringSummary | null>(null);
   const timer = useRef<number | null>(null);
 
   const poll = useCallback(async () => {
@@ -61,8 +69,13 @@ export function Backfill(): React.JSX.Element {
     try {
       const db = await openDatabase();
       setSummary(await getMeta<BackfillSummary>(db, 'backfill'));
+      // Read separately: clustering owns its own summary precisely because it
+      // can fail without failing the backfill, so its outcome is not in the
+      // backfill record.
+      setClustering(await getMeta<ClusteringSummary>(db, 'clustering'));
     } catch {
       setSummary(null); // no database yet — nothing has run
+      setClustering(null);
     }
   }, []);
 
@@ -142,7 +155,7 @@ export function Backfill(): React.JSX.Element {
       {progress.error !== null && <p className="error-note">{progress.error}</p>}
       {note !== null && <p className="error-note">{note}</p>}
 
-      {summary !== null && <Timings summary={summary} />}
+      {summary !== null && <Timings summary={summary} clustering={clustering} />}
     </section>
   );
 }
@@ -152,9 +165,23 @@ function formatMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
-function Timings({ summary }: { summary: BackfillSummary }): React.JSX.Element {
-  const stages = STAGE_ORDER.filter((stage) => summary.stageMs[stage] !== undefined);
-
+/**
+ * Enumerates every *expected* stage and marks the missing ones, rather than
+ * enumerating only what was found (§14).
+ *
+ * The distinction is the whole point of this component. A table built from
+ * `Object.keys(stageMs)` — or filtered through a stale allowlist — can only
+ * ever show presence. A stage that ran and was omitted, a stage that threw,
+ * and a stage never reached all render as the same blank space, and the report
+ * silently stops describing the pipeline.
+ */
+function Timings({
+  summary,
+  clustering,
+}: {
+  summary: BackfillSummary;
+  clustering: ClusteringSummary | null;
+}): React.JSX.Element {
   return (
     <div className="timings">
       <h3>
@@ -170,12 +197,35 @@ function Timings({ summary }: { summary: BackfillSummary }): React.JSX.Element {
           </tr>
         </thead>
         <tbody>
-          {stages.map((stage) => {
-            const mine = summary.stageMs[stage]!;
+          {STAGE_ORDER.map((stage) => {
+            const mine = summary.stageMs[stage];
             const node = NODE_BASELINE_MS[stage];
+
+            // A stage with no recorded duration is reported as such, with
+            // whatever reason is available, never dropped from the table.
+            if (mine === undefined) {
+              const why =
+                stage === 'cluster' && clustering?.error !== undefined
+                  ? `failed: ${clustering.error}`
+                  : 'did not run';
+              return (
+                <tr key={stage} data-missing="true">
+                  <td>{stage}</td>
+                  <td className="stage-missing" colSpan={3}>
+                    {why}
+                  </td>
+                </tr>
+              );
+            }
+
             return (
               <tr key={stage}>
-                <td>{stage}</td>
+                <td>
+                  {stage}
+                  {stage === 'cluster' && clustering?.error !== undefined && (
+                    <span className="stage-missing"> · failed</span>
+                  )}
+                </td>
                 <td>{formatMs(mine)}</td>
                 <td>{node === undefined ? '—' : formatMs(node)}</td>
                 <td>{node === undefined || node === 0 ? '—' : `${(mine / node).toFixed(2)}×`}</td>
@@ -184,6 +234,20 @@ function Timings({ summary }: { summary: BackfillSummary }): React.JSX.Element {
           })}
         </tbody>
       </table>
+
+      {clustering !== null && clustering.error === undefined && (
+        <p className="detail">
+          {clustering.clusters} clusters over {clustering.nodes.toLocaleString()} nodes ·{' '}
+          {clustering.unclusteredPages.toLocaleString()} pages unclustered (the discovery queue, not a
+          failure)
+        </p>
+      )}
+      {clustering?.error !== undefined && (
+        <p className="error-note">
+          Clustering failed: {clustering.error}. The corpus is still stored and searchable; the next
+          run retries.
+        </p>
+      )}
       <p className="detail">
         Node ran multi-threaded native ONNX; this runs single-threaded WASM,
         which MV3&rsquo;s CSP requires.

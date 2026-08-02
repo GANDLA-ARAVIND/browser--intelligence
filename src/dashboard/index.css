@@ -432,6 +432,16 @@ li[data-state="fail"] .dot {
   font-size: 0.875rem;
 }
 
+/* A stage that did not run is reported, not omitted (§14). */
+.stage-missing {
+  color: var(--fail);
+  font-style: italic;
+}
+
+tr[data-missing='true'] td:first-child {
+  color: var(--muted);
+}
+
 .remove-range {
   display: flex;
   flex-wrap: wrap;
