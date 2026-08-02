@@ -13,11 +13,20 @@ const STAGE_LABEL: Record<BackfillStage, string> = {
   embedding: 'Embedding titles',
   collapsing: 'Collapsing near-duplicates',
   writing: 'Writing to local storage',
+  clustering: 'Finding topics',
   done: 'Complete',
   error: 'Failed',
 };
 
-const ACTIVE: BackfillStage[] = ['reading-history', 'filtering', 'loading-model', 'embedding', 'collapsing', 'writing'];
+const ACTIVE: BackfillStage[] = [
+  'reading-history',
+  'filtering',
+  'loading-model',
+  'embedding',
+  'collapsing',
+  'writing',
+  'clustering',
+];
 
 const POLL_MS = 400;
 

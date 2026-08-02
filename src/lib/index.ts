@@ -7,6 +7,7 @@
  */
 
 export * from './types.js';
+export * from './chunk.js';
 export * from './url.js';
 export * from './junk.js';
 export * from './titles.js';

@@ -20,6 +20,7 @@
  * 384 dims and has no trustworthy JS implementation. See CLAUDE.md §14.
  */
 
+import { createSlicer, DEFAULT_SLICE_MS } from './chunk.js';
 import { centroidOf, dot, dotVec } from './vectors.js';
 
 export interface Cluster {
@@ -120,6 +121,116 @@ export function clusterByMutualKnn(
   let mutualEdges = 0;
   let bridgesCut = 0;
   for (let i = 0; i < count; i++) {
+    for (const j of topIndex[i]!) {
+      if (j <= i || !neighbourSets[j]!.has(i)) continue;
+      if (sharedNeighbours(i, j) < sharedMin) {
+        bridgesCut++;
+        continue;
+      }
+      union(i, j);
+      mutualEdges++;
+    }
+  }
+
+  const components = new Map<number, number[]>();
+  for (let i = 0; i < count; i++) {
+    const root = find(i);
+    const bucket = components.get(root);
+    if (bucket === undefined) components.set(root, [i]);
+    else bucket.push(i);
+  }
+
+  const clusters: Cluster[] = [];
+  const noise: number[] = [];
+  for (const members of components.values()) {
+    if (members.length < minClusterSize) noise.push(...members);
+    else clusters.push(describeCluster(matrix, members));
+  }
+
+  clusters.sort((a, b) => b.members.length - a.members.length);
+  noise.sort((a, b) => a - b);
+  return { clusters, noise, mutualEdges, bridgesCut, components: components.size };
+}
+
+/**
+ * Chunked mutual-kNN — identical output to `clusterByMutualKnn`, yielding
+ * between outer iterations (§14, src/lib/chunk.ts).
+ *
+ * The extension path; the synchronous version above is the reference the
+ * chunked one is asserted against on the real corpus. Measured 3.4s unbroken
+ * before chunking.
+ *
+ * Both O(n²) phases are sliced — the top-k scan and the mutual-edge/shared-
+ * neighbour pass. The second is cheaper but still quadratic in the worst case,
+ * and §14's rule is about *any* whole-corpus synchronous pass, not just the
+ * expensive one.
+ */
+export async function clusterByMutualKnnChunked(
+  matrix: Float32Array,
+  count: number,
+  options: KnnOptions,
+  sliceMs: number = DEFAULT_SLICE_MS
+): Promise<ClusterResult & { mutualEdges: number; bridgesCut: number; components: number }> {
+  const { k, sharedMin, minSim: floor, minClusterSize } = options;
+
+  const topIndex: number[][] = Array.from({ length: count }, () => []);
+  const topSim: number[][] = Array.from({ length: count }, () => []);
+
+  const offer = (node: number, other: number, sim: number): void => {
+    const sims = topSim[node]!;
+    if (sims.length === k && sim <= sims[k - 1]!) return;
+    const indices = topIndex[node]!;
+    let position = sims.length;
+    while (position > 0 && sims[position - 1]! < sim) position--;
+    sims.splice(position, 0, sim);
+    indices.splice(position, 0, other);
+    if (sims.length > k) {
+      sims.pop();
+      indices.pop();
+    }
+  };
+
+  const slicer = createSlicer(sliceMs);
+  for (let i = 0; i < count; i++) {
+    if (slicer.due()) await slicer.yieldNow();
+    for (let j = i + 1; j < count; j++) {
+      const sim = dot(matrix, i, j);
+      if (sim < floor) continue;
+      offer(i, j, sim);
+      offer(j, i, sim);
+    }
+  }
+
+  const parent = new Int32Array(count);
+  for (let i = 0; i < count; i++) parent[i] = i;
+  const find = (x: number): number => {
+    let root = x;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[x] !== root) {
+      const next = parent[x]!;
+      parent[x] = root;
+      x = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent[rootB] = rootA;
+  };
+
+  const neighbourSets = topIndex.map((list) => new Set(list));
+  const sharedNeighbours = (a: number, b: number): number => {
+    const setB = neighbourSets[b]!;
+    let shared = 0;
+    for (const n of topIndex[a]!) if (n !== b && setB.has(n)) shared++;
+    return shared;
+  };
+
+  let mutualEdges = 0;
+  let bridgesCut = 0;
+  for (let i = 0; i < count; i++) {
+    if (slicer.due()) await slicer.yieldNow();
     for (const j of topIndex[i]!) {
       if (j <= i || !neighbourSets[j]!.has(i)) continue;
       if (sharedNeighbours(i, j) < sharedMin) {

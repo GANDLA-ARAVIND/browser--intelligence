@@ -11,18 +11,23 @@
 
 import { DEFAULT_BLOCKED_CATEGORIES, type SensitiveCategory } from './blocklist.js';
 import { startBlockingMonitor, type BlockingEvent } from './blocking.js';
-import { collapseNearDuplicates, DEFAULT_DUPLICATE_THRESHOLD } from './dedupe.js';
+import { clusterByMutualKnnChunked } from './clustering.js';
+import { collapseNearDuplicatesChunked, DEFAULT_DUPLICATE_THRESHOLD, expandGroups } from './dedupe.js';
 import { createEmbedder, EMBEDDING_BATCH_SIZE, EMBEDDING_DIM, type EmbedderOptions } from './embeddings.js';
 import { filterHistory, summariseAudit, type FilterAuditSummary } from './filter.js';
 import { classifyFormat } from './format.js';
 import {
   clearGroups,
+  countUnclusteredPages,
   hashId,
   openDatabase,
   putGroups,
   putMeta,
   putPages,
+  replaceClusters,
   type BackfillSummary,
+  type ClusterRecord,
+  type ClusteringSummary,
   type GroupRecord,
   type PageRecord,
 } from './storage.js';
@@ -36,8 +41,22 @@ export type BackfillStage =
   | 'embedding'
   | 'collapsing'
   | 'writing'
+  | 'clustering'
   | 'done'
   | 'error';
+
+/**
+ * Clustering parameters (§5). Swept on the real mixed corpus and left at the
+ * Phase 0 defaults: 91 clusters / 34.3% noise / largest 4.8%.
+ *
+ * **Do not tune these on noise alone** (§14). `shared=3` at `k=10` improves
+ * noise to 22.5% and simultaneously lets one cluster take 47.4% of the graph —
+ * the chaining failure the shared-neighbour test exists to prevent.
+ */
+const CLUSTER_KNN = 10;
+const CLUSTER_SHARED = 4;
+const CLUSTER_MIN_SIM = 0.2;
+const CLUSTER_MIN_SIZE = 5;
 
 export interface BackfillProgress {
   stage: BackfillStage;
@@ -192,8 +211,13 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
     // --- collapse -----------------------------------------------------------
     emit({ stage: 'collapsing', done: 0, total: pages.length, detail: 'collapsing near-duplicates' });
 
-    const { groups } = await time('collapse', () =>
-      collapseNearDuplicates(matrix, pages, options.dupThreshold ?? DEFAULT_DUPLICATE_THRESHOLD)
+    // `repMatrix` is kept, not discarded. It is exactly what clustering
+    // consumes, and it is already in memory here — which is the whole
+    // architectural case for clustering as a backfill stage rather than a
+    // separate triggered job that would reload every vector and re-run this
+    // 12-second pass to rebuild it.
+    const { groups, repMatrix } = await time('collapse', () =>
+      collapseNearDuplicatesChunked(matrix, pages, options.dupThreshold ?? DEFAULT_DUPLICATE_THRESHOLD)
     );
 
     progress.counts.uniqueNodes = groups.length;
@@ -212,6 +236,77 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
         await putGroups(db, records.slice(offset, offset + 200));
       }
     });
+
+    // --- cluster ------------------------------------------------------------
+    // §5/§6: clustering is the primary classification mechanism now that seed
+    // labels are only a weak prior, so a fresh install has no topics at all
+    // until this runs — which is why it lives here rather than on a trigger
+    // (§10 needs a populated screen 60s after install).
+    //
+    // **Non-fatal by construction.** Backfill's deliverable is an embedded,
+    // stored, searchable corpus; that is already complete by this point. A
+    // clustering bug must never discard a finished two-minute embed run, so
+    // this owns its failure, records it, and leaves `clusterId` unset — which
+    // is the same state as "not yet clustered" and is what the §7 trigger and
+    // the weekly recompute will retry from.
+    emit({ stage: 'clustering', done: 0, total: groups.length, detail: `clustering ${groups.length} nodes` });
+    try {
+      await time('cluster', async () => {
+        const { clusters, noise } = await clusterByMutualKnnChunked(repMatrix, groups.length, {
+          k: CLUSTER_KNN,
+          sharedMin: CLUSTER_SHARED,
+          minSim: CLUSTER_MIN_SIM,
+          minClusterSize: CLUSTER_MIN_SIZE,
+        });
+
+        const records: ClusterRecord[] = [];
+        const pageIdToCluster = new Map<string, string>();
+        clusters.forEach((cluster, index) => {
+          const id = `c${index}-${hashId(cluster.members.join(','))}`;
+          const memberPageIndices = expandGroups(groups, cluster.members);
+          for (const pageIndex of memberPageIndices) pageIdToCluster.set(idFor(pages[pageIndex]!), id);
+          records.push({
+            id,
+            memberIds: cluster.members.map((groupIndex) => idFor(pages[groups[groupIndex]!.representative]!)),
+            size: memberPageIndices.length,
+            centroid: new Float32Array(cluster.centroid),
+            label: null, // named by the Phase 3 step 3 LLM pass, never before
+            createdAt: Date.now(),
+          });
+        });
+
+        await replaceClusters(db, records, pageIdToCluster);
+
+        const clusteringSummary: ClusteringSummary = {
+          key: 'clustering',
+          completedAt: Date.now(),
+          nodes: groups.length,
+          clusters: records.length,
+          unclusteredPages: await countUnclusteredPages(db),
+          durationMs: stageMs['cluster'] ?? 0,
+        };
+        await putMeta(db, clusteringSummary);
+
+        emit({
+          stage: 'clustering',
+          done: groups.length,
+          total: groups.length,
+          detail: `${records.length} clusters, ${expandGroups(groups, noise).length} pages unclustered`,
+        });
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[backfill] clustering failed; the corpus is still stored and searchable', error);
+      await putMeta(db, {
+        key: 'clustering',
+        completedAt: Date.now(),
+        nodes: groups.length,
+        clusters: 0,
+        unclusteredPages: await countUnclusteredPages(db).catch(() => 0),
+        durationMs: 0,
+        error: message,
+      } satisfies ClusteringSummary);
+    }
 
     const summary = finish(
       startedAt,

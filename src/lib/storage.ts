@@ -16,12 +16,13 @@ import type { Format } from './format.js';
 import type { ExtractionQuality } from './quality.js';
 
 export const DB_NAME = 'browser-intelligence';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const STORE_PAGES = 'pages';
 export const STORE_GROUPS = 'groups';
 export const STORE_META = 'meta';
 export const STORE_QUEUE = 'queue';
+export const STORE_CLUSTERS = 'clusters';
 
 export type Intent = 'learning' | 'debugging' | 'job-hunting' | 'shopping' | 'entertainment' | 'reference';
 
@@ -67,6 +68,57 @@ export interface PageRecord {
   visitCount: number;
   activeSeconds: number;
   sessionId?: string;
+
+  /**
+   * Which derived cluster this page belongs to, or absent for noise.
+   *
+   * Deliberately **not** the same thing as `topics`. A cluster is a shape in
+   * the data; a topic is a *name*, and naming needs the LLM pass in Phase 3
+   * step 3. §5/§6 permit only a derived cluster to become a displayed topic,
+   * so this is that link — stored now, named later, and `topics` stays empty
+   * until it is.
+   *
+   * Absence is the normal state, not a failure: it is §5's discovery queue,
+   * and it is also what the §7 re-clustering trigger counts.
+   */
+  clusterId?: string;
+}
+
+/**
+ * A derived cluster (CLAUDE.md §5, §6). **The only thing permitted to become a
+ * displayed topic**, and only once named.
+ */
+export interface ClusterRecord {
+  id: string;
+  /** Representative page ids — cluster members are collapsed nodes, not pages. */
+  memberIds: string[];
+  /** Pages covered once every representative is expanded through its group. */
+  size: number;
+  centroid: Float32Array;
+  /**
+   * `null` until the Phase 3 step 3 labelling pass names it. A cluster with no
+   * name must never be shown to the user as a topic — an unnamed shape is not
+   * a claim about what they were doing.
+   */
+  label: string | null;
+  createdAt: number;
+}
+
+/**
+ * The last clustering run. `unclusteredPages` is the baseline the §7 trigger
+ * measures growth against — without it, "pages with no cluster" is permanently
+ * ~1,700 and the trigger fires forever.
+ */
+export interface ClusteringSummary {
+  key: 'clustering';
+  completedAt: number;
+  nodes: number;
+  clusters: number;
+  /** Pages in no cluster at the moment this run finished. */
+  unclusteredPages: number;
+  durationMs: number;
+  /** Absent when the run succeeded. */
+  error?: string;
 }
 
 /** A near-duplicate set collapsed to one node before clustering. */
@@ -166,6 +218,13 @@ export function openDatabase(): Promise<IDBDatabase> {
       // replaces the pending entry instead of queueing the page twice.
       if (!db.objectStoreNames.contains(STORE_QUEUE)) {
         db.createObjectStore(STORE_QUEUE, { keyPath: 'id' });
+      }
+
+      // v4 adds the clusters store. No migration of existing pages is needed:
+      // `clusterId` is optional and absent means "not in a cluster", which is
+      // exactly true of every record written before clustering existed.
+      if (!db.objectStoreNames.contains(STORE_CLUSTERS)) {
+        db.createObjectStore(STORE_CLUSTERS, { keyPath: 'id' });
       }
 
       // v3 adds vectorSource. Every record written before it came from the
@@ -291,6 +350,63 @@ export async function getMeta<T>(db: IDBDatabase, key: string): Promise<T | null
   const tx = db.transaction(STORE_META, 'readonly');
   const value = (await promisify(tx.objectStore(STORE_META).get(key))) as T | undefined;
   return value ?? null;
+}
+
+// --- derived clusters (CLAUDE.md §5, §6) ------------------------------------
+
+export async function getAllClusters(db: IDBDatabase): Promise<ClusterRecord[]> {
+  const tx = db.transaction(STORE_CLUSTERS, 'readonly');
+  return promisify(tx.objectStore(STORE_CLUSTERS).getAll() as IDBRequest<ClusterRecord[]>);
+}
+
+/**
+ * Replaces the whole clustering wholesale — clusters are derived, and §5 is
+ * explicit that the recompute is full rather than incremental. Merging is
+ * where stale membership would accumulate, exactly as it would for groups.
+ *
+ * Writes the cluster records *and* stamps `clusterId` onto every page they
+ * cover, clearing it from every page they do not, in one pass. Both halves
+ * matter: a stale `clusterId` on a page that fell out of every cluster would
+ * claim membership that no longer exists, and that is the suppression-class
+ * failure in reverse — a claim nothing would contradict.
+ */
+export async function replaceClusters(
+  db: IDBDatabase,
+  clusters: ClusterRecord[],
+  pageIdToCluster: Map<string, string>
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([STORE_CLUSTERS, STORE_PAGES], 'readwrite');
+    const clusterStore = tx.objectStore(STORE_CLUSTERS);
+    clusterStore.clear();
+    for (const cluster of clusters) clusterStore.put(cluster);
+
+    const pageStore = tx.objectStore(STORE_PAGES);
+    pageStore.openCursor().onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+      if (cursor === null) return;
+      const record = cursor.value as PageRecord;
+      const next = pageIdToCluster.get(record.id);
+      if (next === undefined && record.clusterId !== undefined) {
+        delete record.clusterId;
+        cursor.update(record);
+      } else if (next !== undefined && record.clusterId !== next) {
+        record.clusterId = next;
+        cursor.update(record);
+      }
+      cursor.continue();
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('cluster write failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('cluster write aborted'));
+  });
+}
+
+/** Pages currently in no cluster — §5's discovery queue, and the §7 trigger's input. */
+export async function countUnclusteredPages(db: IDBDatabase): Promise<number> {
+  const pages = await getAllPages(db);
+  return pages.filter((page) => page.clusterId === undefined).length;
 }
 
 // --- retroactive removal (CLAUDE.md §9) -------------------------------------

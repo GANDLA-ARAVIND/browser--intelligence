@@ -265,10 +265,46 @@ Near-duplicate pages are collapsed to one weighted node **before** clustering,
 or twenty near-identical LeetCode rows saturate each other's neighbourhoods
 (§14).
 
-Trigger early if the unclassified pool exceeds ~50 items.
+### When clustering runs
 
-**Full recompute weekly. Do not attempt incremental clustering** — it takes
-seconds at this scale and incremental variants are a bug factory.
+**First run is a backfill stage, not a trigger.** With seeds demoted to a weak
+prior, a fresh install has *no* topics until clustering has run once — and §10
+requires a populated screen 60 seconds after install. Backfill already computes
+`repMatrix` (the collapsed representatives) and used to discard it; clustering
+consumes exactly that, so running it there costs one pass over data already in
+memory instead of a separate job that would reload every vector and repeat the
+12-second collapse to rebuild it.
+
+That stage is **non-fatal**. Backfill's deliverable is an embedded, stored,
+searchable corpus, and by the time clustering starts that is already complete.
+A clustering failure is caught, recorded in the clustering summary, and leaves
+`clusterId` unset — indistinguishable from "not yet clustered", which is what
+the retries below already handle. **A clustering bug must never discard a
+finished embed run.**
+
+**Re-run when either is true:**
+
+- the unclustered pool has **grown by ~50 pages since the last run**, or
+- **7 days** have passed.
+
+The growth clause is the load-bearing one, and it is measured against a
+baseline stored by the previous run (`ClusteringSummary.unclusteredPages`).
+Defining the pool as "pages with no topic" — the obvious reading — is now
+**permanently satisfied**, because noise pages legitimately have no topic and
+there are ~1,700 of them; that version of the trigger fires forever. Growth
+since the baseline is zero immediately after a run and only rises as new pages
+arrive, which is the behaviour intended. The 7-day clause is the floor, so a
+light-browsing week still refreshes; the growth clause is what stops live
+captures waiting a full week after install.
+
+**Full recompute. Do not attempt incremental clustering** — it takes seconds at
+this scale and incremental variants are a bug factory.
+
+Both O(n²) passes are **time-sliced** (`src/lib/chunk.ts`): unbroken, they
+block for 15.2s combined, and the offscreen document services no messages for
+that entire window. Sliced at 75ms the longest stall is ~125ms, for +40%
+wall-clock. Chunked output is asserted byte-identical to the synchronous
+reference rather than assumed.
 
 ### Why no vector database
 
@@ -572,6 +608,12 @@ usable label; the unclassified pool is the normal state until a cluster forms.
 This raises the stakes on the two warnings below — they are no longer one
 signal among several.
 
+**Step 2 is complete.** Clustering runs in the offscreen document as a backfill
+stage over the collapsed representatives, time-sliced so neither O(n²) pass
+blocks (§5, §7). It writes `ClusterRecord`s and stamps `PageRecord.clusterId`;
+**it does not write `topics`** — a cluster is a shape, a topic is a *name*, and
+naming is step 3. An unnamed cluster must never surface as a topic.
+
 **Detect passive-media SESSIONS, not passive pages.** Signature: multiple
 sequential pages, same domain, `activeSeconds` ~0 across all of them, and short
 per-page duration. A single long page with `activeSeconds` ~0 is *attention* —
@@ -688,6 +730,7 @@ true now* and *what you must do*.
 
 | Rule | Why it binds |
 |---|---|
+| **Never tune clustering on noise% alone — `largest%` is the alarm** | Noise looks like the obvious objective: lower is better, more pages classified. It is not, and optimising it ships the exact failure the shared-neighbour test exists to prevent. Measured on the real mixed corpus at `k=10`: `shared=4` gives **34.3% noise, largest 4.8%** (the default); `shared=3` gives **22.5% noise, largest 47.4%** — noise improves by twelve points while *one cluster swallows half the graph*. That is chaining, and a tuner watching only noise would ship it as an improvement and call it a win. Worse at `k=15, shared=2`: **3.6% noise, largest 95.6%** — a near-perfect noise score for a single blob containing almost everything, which classifies nothing. **Always report `largest%` beside `noise%`, and treat a rising `largest%` as disqualifying regardless of what noise does.** Noise is not failure — §5 calls the unclustered pool the discovery queue |
 | Clustering keys on neighbour *rank*, not an absolute cosine cutoff | Measured on MiniLM title embeddings: same-topic pairs median 0.194, cross-topic median 0.021 — the separation is real but the absolute scale is dataset-specific, so a fixed threshold does not transfer |
 | Boilerplate title suffixes are derived from the data, never hardcoded | "- YouTube" on 800 titles clusters on the suffix, and §4 is explicit that a domain is not a category — but a hardcoded suffix list would violate §6, so frequency across the user's own titles decides |
 | **Zero-shot page→label matching is DISPROVEN as a classifier — seeds are a weak prior only** | Measured on 5,374 real pages against 25 seed labels. §5's ~0.40 classifies **13.3%** of the corpus, sending 87% to a "discovery queue" that is therefore the corpus. **Lowering it does not help:** correct-label scores span **0.091–0.473**, so no cutoff separates right from wrong — 0.25 rejects the correct label on the biryani page (0.091), the film trailer (0.097) and *"Longest Substring Without Repeating Characters"* (0.140, which ranked #1 correctly). **Rank-and-margin does not rescue it, and this is the trap** — it is the fix that worked for clustering and it will be proposed again: `Application History \| Mynaukri` scores **0.467 on `history` with a 0.277 margin**, above every threshold considered and in the top decile of margins, entirely from lexical overlap with the word "History". Margin measures *separation*, not *correctness*. Clustering's failure was scale drift; this failure is confident wrongness — different problem, same-looking symptom. **Structural reason:** ~1,100 LeetCode/NeetCode pages where `3Sum` → business and `Two Sum` → finance, because those titles are about arithmetic and objects and nothing in them lexically resembles "programming"; a 64-token title has no path to that inference. Seeds now do one job — keep day one non-empty — and are **never displayed as a topic label**. Clustering is the classification mechanism (§5, §6) |
