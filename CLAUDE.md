@@ -350,7 +350,7 @@ hard — always fall through.
 
 | Tier | Method | Coverage | Quality |
 |---|---|---|---|
-| 1 | Custom adapters — **measured as needed: YouTube (transcript), NeetCode (JS-rendered problem statement)** | ~15% | Best |
+| 1 | Custom adapters — **none. Measured need is zero; see below** | — | — |
 | 2 | `@mozilla/readability` | ~70% | Good |
 | 3 | Title + `<meta description>` + `og:` tags | ~99% | Adequate |
 | 4 | Domain rule only | 100% | Weak but never empty |
@@ -359,14 +359,25 @@ Tier 3 is load-bearing: every page has a title, and titles alone embed well
 enough to categorise. That is why the history backfill works with no page
 content at all.
 
-Reddit, GitHub and Stack Overflow were named as tier-1 candidates in the
-original draft and are **unmeasured guesses**. GitHub was measured and removed:
-repo pages score good 0.87 at 82% coverage, and only profile and sub-tab pages
-fail, which the ladder already demotes (§11, §14). Do not build an adapter for
-any site until its failure is measured.
+**The adapter budget is measured at zero, down from "5–8 maximum".** All three
+candidates were proposed from a single observed failure each and all three were
+then eliminated by measurement: **GitHub** (repo pages score good 0.87 at 82%
+coverage; only profile and sub-tab pages fail, which the ladder already
+demotes), **NeetCode** (tier 3's meta description carries the actual problem
+statement, good 0.74), and **YouTube** (three rounds, three distinct DOM
+failure modes — stale segment selector, overflow-menu variant, and two
+successes that were both auto-captioned Telugu videos). Reddit and Stack
+Overflow were named in the original draft and were never more than guesses.
 
-Write 5–8 adapters maximum, and only for domains that coverage stats show are
-**both frequent and failing**.
+The reason is structural, not luck: **every adapter was proposed before the
+quality-driven fall-through existed** (§8 below, DECISIONS.md). A ladder that
+silently accepted `poor` output made each site look like it needed a bespoke
+extractor; once a rung is rejected on its quality verdict, tier 2/3 handles
+these sites without help. Tier 1 remains in the type and in this table as a
+deliberate extension point, and the bar for adding one is now high: a site
+must be **frequent, measurably failing after the ladder has fallen through**,
+and fixable without an ongoing maintenance commitment against someone else's
+UI redesigns.
 
 **The tier alone is not a coverage metric.** It records which rung *supplied*
 the text, not whether the text is usable — every page in the first capture test
@@ -488,10 +499,15 @@ running, embeddings stored in IndexedDB, search returning results in a bare UI.
 Content script, Readability, extraction ladder, dwell filtering, active
 engagement tracking, and **all of §9**.
 
-**Sites measured as needing tier-1 adapters** (from the capture tests):
-YouTube (transcript — see §14, this is the one case no structural threshold can
-catch) and NeetCode (problem statement, JS-rendered and invisible to
-Readability).
+**No tier-1 adapters were built, and none are needed** (§8). All three
+candidates — GitHub, NeetCode, YouTube — were measured and eliminated; the
+quality-driven fall-through handles every one of them. The YouTube transcript
+adapter was built, tested over three rounds and **removed**: it hit three
+distinct DOM failure modes and fixing them meant opening the overflow menu
+with synthetic clicks on a page the user is watching *and* chasing a segment
+selector across A/B variants — permanent maintenance against someone else's UI,
+for one site. YouTube now falls to Readability like everything else, which
+captures the description and player chrome rather than the transcript (§15).
 
 Confirmed good without an adapter: Medium, job-listing pages, and **GitHub repo
 pages** — `GANDLA-ARAVIND/NUTRILENS` scored good 0.87 at 7,412 chars with 82%
@@ -665,6 +681,19 @@ true now* and *what you must do*.
 - Helps people who browse **with intent**. Pure entertainment has little to
   organise.
 - Extraction coverage is imperfect on some sites. Report the real number.
+- **YouTube pages are indexed on the video description and player chrome, not
+  the transcript — so a video is searchable by how it was *described*, not by
+  what was *said* in it.** A transcript adapter was built and removed: across
+  three rounds it hit three distinct DOM failure modes (stale segment selector,
+  an overflow-menu layout variant, and two successes that were both
+  auto-captioned Telugu videos), and making it reliable would have meant
+  synthetic clicks to open menus on a page the user is watching plus a selector
+  chased across YouTube's A/B variants forever. **There is no planned fix.**
+  Structural quality scoring cannot flag this either — the description is
+  well-formed prose, so it scores *well* while being about the wrong thing, and
+  on one measured page player chrome plus a username scored 0.73 against a real
+  transcript's 0.67. Videos are still captured, categorised and searchable;
+  they are just represented by their surrounding text.
 - Chrome history retention caps the backfill at ~90 days.
 - **Your index is stored unencrypted on your machine.** It lives in the
   extension's IndexedDB inside your Chrome profile, protected by the same

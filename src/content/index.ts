@@ -15,7 +15,6 @@ import {
   ACTIVITY_WINDOW_MS,
   capText,
   DWELL_THRESHOLD_MS,
-  TIER_ADAPTER,
   TIER_DOMAIN_ONLY,
   TIER_METADATA,
   TIER_READABILITY,
@@ -24,7 +23,6 @@ import {
 } from '../lib/capture.js';
 import { assessExtraction, type ExtractionQuality } from '../lib/quality.js';
 import { isLocalHost, stableSearch } from '../lib/url.js';
-import { tryYouTubeTranscript } from './youtube.js';
 
 /**
  * Injection marker.
@@ -176,11 +174,14 @@ addEventListener('blur', restartElapsedClock, { passive: true });
 document.addEventListener('visibilitychange', restartElapsedClock, { passive: true });
 
 /**
- * `isTrusted` excludes synthetic events — the YouTube transcript adapter
- * below dispatches a real `click()` on the page to open the transcript panel,
- * and without this check that self-inflicted click would mark the user as
- * "active" for the next `ACTIVITY_WINDOW_MS`, inflating `activeSeconds` on
- * attention the user never gave (§9).
+ * `isTrusted` excludes synthetic events — only a real human gesture counts.
+ *
+ * Added when the YouTube adapter's own synthetic `click()` was marking the
+ * user active; the adapter is gone, but the check is kept because the
+ * requirement is general. Page scripts, other extensions and autoplay
+ * carousels all dispatch synthetic events, and §9 is explicit that one
+ * inflated duration makes every duration untrustworthy — `activeSeconds` must
+ * mean attention the user actually gave.
  */
 function markInput(event: Event): void {
   if (event.isTrusted) lastInput = Date.now();
@@ -282,30 +283,15 @@ function tryDomain(): string {
  *
  * The returned tier is the one that actually **supplied** the text.
  *
- * Tier 1 is awaited before the synchronous rungs run, not raced against them:
- * it is the only rung that opens UI to read (the transcript panel), so it
- * needs to resolve — or time out — before anything else touches the page.
- * `tryYouTubeTranscript` already no-ops on every non-YouTube page, so this
- * costs nothing there.
- *
- * `allowSiteAdapter` is false on the `pagehide` path. That capture is racing
- * page teardown with no fixed budget — Chrome can discard the page at any
- * point after the event fires — and the adapter's up-to-2.5s wait for the
- * transcript panel to render would burn exactly the window `sendMessage`
- * needs. Losing tier 1 there still leaves Readability; losing the whole
- * capture would not, and would do it silently (§14).
+ * **There is no tier-1 rung.** All three candidate site adapters — GitHub,
+ * NeetCode, YouTube — were proposed from a single observed failure each and
+ * then eliminated by measurement once this quality-driven fall-through
+ * existed (DECISIONS.md). §8's adapter budget is measured at zero. The ladder
+ * starts at Readability, and a site that extracts badly falls through on its
+ * quality verdict like any other.
  */
-async function extract(pageTextLength: number, allowSiteAdapter: boolean): Promise<Attempt> {
+function extract(pageTextLength: number): Attempt {
   const attempts: Attempt[] = [];
-
-  console.log(`[content] extract: allowSiteAdapter=${allowSiteAdapter}`);
-  const transcript = allowSiteAdapter ? capText(await tryYouTubeTranscript()) : '';
-  if (transcript.length > 0) {
-    const quality = assessExtraction(transcript, pageTextLength);
-    const attempt: Attempt = { text: transcript, tier: TIER_ADAPTER, quality };
-    if (quality.verdict !== 'poor') return attempt;
-    attempts.push(attempt);
-  }
 
   // Thunks, not values: a rung must not run unless the ladder reaches it.
   const rungs: Array<[ExtractionTier, () => string]> = [
@@ -353,9 +339,7 @@ async function capture(reason: string): Promise<void> {
   // Compared against the page's own visible text, so "Readability found 500
   // chars" can be distinguished from "the page only had 500 chars".
   const pageTextLength = (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim().length;
-  const allowSiteAdapter = reason !== 'pagehide';
-  console.log(`[content] capture(${reason}): allowSiteAdapter=${allowSiteAdapter}`);
-  const { text, tier, quality } = await extract(pageTextLength, allowSiteAdapter);
+  const { text, tier, quality } = extract(pageTextLength);
 
   const payload: CapturedPage = {
     url: location.href,
