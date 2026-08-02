@@ -292,3 +292,66 @@ export async function getMeta<T>(db: IDBDatabase, key: string): Promise<T | null
   const value = (await promisify(tx.objectStore(STORE_META).get(key))) as T | undefined;
   return value ?? null;
 }
+
+// --- retroactive removal (CLAUDE.md §9) -------------------------------------
+//
+// "This wasn't me" is the control people actually use, because nobody
+// remembers to hit pause beforehand. Both entry points below — a time range
+// and an explicit id list — end up here, so there is exactly one deletion
+// path to get right rather than two.
+
+/**
+ * Ids of every page whose `lastVisit` falls in `[start, end]`, via the
+ * `lastVisit` index rather than a full scan — the same index the dedupe and
+ * search paths already rely on existing.
+ */
+export async function getPageIdsInRange(db: IDBDatabase, start: number, end: number): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PAGES, 'readonly');
+    const index = tx.objectStore(STORE_PAGES).index('lastVisit');
+    const ids: string[] = [];
+    const request = index.openCursor(IDBKeyRange.bound(start, end));
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+      if (cursor === null) {
+        resolve(ids);
+        return;
+      }
+      ids.push((cursor.value as PageRecord).id);
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error ?? new Error('range query failed'));
+  });
+}
+
+/**
+ * Deletes pages by id, **and** any matching entry still sitting in the
+ * capture queue.
+ *
+ * The queue half is not optional: a page can be mid-flight — captured,
+ * queued, not yet embedded — at the moment the user deletes it. Without this,
+ * the next drain would write it straight back, and "delete" would have
+ * silently un-done itself a minute later. `enqueueCapture` and `putPages`
+ * both key on the same normalized-URL hash, which is what makes matching ids
+ * across the two stores correct.
+ */
+export async function deletePages(db: IDBDatabase, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_PAGES, 'readwrite');
+    const store = tx.objectStore(STORE_PAGES);
+    for (const id of ids) store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('page delete failed'));
+  });
+
+  await removeFromQueue(db, ids);
+}
+
+/** Convenience wrapper: look up a range, delete it, report how many. */
+export async function deletePagesInRange(db: IDBDatabase, start: number, end: number): Promise<number> {
+  const ids = await getPageIdsInRange(db, start, end);
+  await deletePages(db, ids);
+  return ids.length;
+}

@@ -15,15 +15,14 @@
 import {
   delay,
   ensureOffscreenDocument,
-  onActionClicked,
   onInstalled,
   onMessage,
   onStartup,
-  openDashboard,
   sendMessage,
   type MessageContext,
 } from '../platform/browser.js';
 import { isSensitive } from '../lib/blocklist.js';
+import { isPaused } from '../lib/pause.js';
 import {
   enqueueCapture,
   getMeta,
@@ -32,6 +31,7 @@ import {
   putMeta,
   type CaptureHealth,
 } from '../lib/storage.js';
+import { loadPauseState } from '../platform/pause.js';
 import { normalizeUrl, isLocalHost } from '../lib/url.js';
 import type { CapturedPage } from '../lib/capture.js';
 import { readHistoryWindows } from '../platform/history.js';
@@ -148,6 +148,11 @@ async function queueCapture(page: CapturedPage, senderIncognito: boolean): Promi
   }
   if (isLocalHost(parsed.hostname.toLowerCase())) return { ok: true, accepted: false, reason: 'localhost' };
 
+  // Re-checked on trusted ground, same reasoning as the blocklist re-check
+  // below: the content script already checked this, but it runs in a page the
+  // extension does not control, and this is the last point before storage.
+  if (isPaused(await loadPauseState())) return { ok: true, accepted: false, reason: 'paused' };
+
   const settings = await loadSettings();
   if (isSensitive(page.url, settings.blockedCategories)) {
     return { ok: true, accepted: false, reason: 'blocklist' };
@@ -235,6 +240,11 @@ function handle(message: Message, context: MessageContext): Promise<Response> | 
         .then(() => sendMessage({ target: 'offscreen', type: 'GET_BACKFILL_PROGRESS' }))
         .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
 
+    case 'INVALIDATE_SEARCH':
+      return ensureOffscreenDocument()
+        .then(() => sendMessage({ target: 'offscreen', type: 'INVALIDATE_SEARCH' }))
+        .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
+
     default:
       return undefined;
   }
@@ -268,8 +278,9 @@ onStartup(() => {
   void wake('onStartup');
 });
 
-onActionClicked(() => {
-  void openDashboard();
-});
+// No onActionClicked listener: the manifest declares a `default_popup`, and
+// Chrome never fires `chrome.action.onClicked` when one is set — the popup
+// owns the click instead. openDashboard() is still used, just from the
+// popup's "open dashboard" link rather than from here.
 
 void wake('worker start');

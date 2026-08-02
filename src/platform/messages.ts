@@ -36,7 +36,14 @@ export type Message =
   | { target: 'offscreen'; type: 'SEARCH'; query: string; limit: number }
   // Live capture. The content script never embeds — it extracts and hands off.
   | { target: 'background'; type: 'CAPTURE_PAGE'; page: CapturedPage }
-  | { target: 'offscreen'; type: 'DRAIN_QUEUE' };
+  | { target: 'offscreen'; type: 'DRAIN_QUEUE' }
+  // §9 retroactive removal. The search index is offscreen-document-local state
+  // (searchIndex.ts's module-scope `index` variable) — a delete in the
+  // dashboard is invisible to it until told, so every delete path sends this
+  // afterward. Without it, a "removed" page keeps appearing in search results
+  // until the next backfill happens to rebuild the index.
+  | { target: 'background'; type: 'INVALIDATE_SEARCH' }
+  | { target: 'offscreen'; type: 'INVALIDATE_SEARCH' };
 
 export interface PongResponse {
   ok: true;
@@ -120,6 +127,7 @@ export interface ReplyMap {
   SEARCH: SearchResponse;
   CAPTURE_PAGE: AcceptedResponse;
   DRAIN_QUEUE: DrainResponse;
+  INVALIDATE_SEARCH: AcceptedResponse;
 }
 
 export type ReplyFor<M extends Message> = ReplyMap[M['type']];
@@ -171,4 +179,5 @@ export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean
   SEARCH: isSearchResponse,
   CAPTURE_PAGE: isAcceptedResponse,
   DRAIN_QUEUE: isDrainResponse,
+  INVALIDATE_SEARCH: isAcceptedResponse,
 };

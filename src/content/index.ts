@@ -21,6 +21,7 @@ import {
   type CapturedPage,
   type ExtractionTier,
 } from '../lib/capture.js';
+import { isPaused, type PauseUntil } from '../lib/pause.js';
 import { assessExtraction, type ExtractionQuality } from '../lib/quality.js';
 import { isLocalHost, stableSearch } from '../lib/url.js';
 
@@ -39,13 +40,35 @@ console.log('[content] script injected', location.href);
 
 // --- §9 gate ----------------------------------------------------------------
 
-async function blockedCategories(): Promise<SensitiveCategory[]> {
+/**
+ * One combined read rather than two: both `settings` and `pauseState` are
+ * needed on every excluded-check, and content scripts run on every page load,
+ * so this is on the hot path.
+ *
+ * On a read failure this fails **open** (not paused, nothing blocked) rather
+ * than closed. That is a deliberate asymmetry, not an oversight: a wrongly
+ * captured page is visible and removable later (§9's retroactive delete), a
+ * wrongly skipped one is gone forever — the same reasoning already applied to
+ * the blocklist (DECISIONS.md).
+ */
+async function captureSettings(): Promise<{ blockedCategories: SensitiveCategory[]; paused: boolean }> {
   try {
-    const stored = await chrome.storage.local.get('settings');
-    const raw = stored['settings'] as { blockedCategories?: unknown } | undefined;
-    return Array.isArray(raw?.blockedCategories) ? (raw.blockedCategories as SensitiveCategory[]) : [];
+    const stored = await chrome.storage.local.get(['settings', 'pauseState']);
+
+    const settingsRaw = stored['settings'] as { blockedCategories?: unknown } | undefined;
+    const blockedCategories = Array.isArray(settingsRaw?.blockedCategories)
+      ? (settingsRaw!.blockedCategories as SensitiveCategory[])
+      : [];
+
+    const pauseRaw = stored['pauseState'] as { until?: unknown } | undefined;
+    const until = pauseRaw?.until;
+    const paused = isPaused({
+      until: until === 'indefinite' || typeof until === 'number' ? (until as PauseUntil) : null,
+    });
+
+    return { blockedCategories, paused };
   } catch {
-    return [];
+    return { blockedCategories: [], paused: false };
   }
 }
 
@@ -58,8 +81,11 @@ async function isExcluded(): Promise<string | null> {
   if (!/^https?:$/.test(location.protocol)) return 'scheme';
   if (isLocalHost(location.hostname.toLowerCase())) return 'localhost';
 
-  const categories = await blockedCategories();
-  if (categories.length > 0 && isSensitive(url, categories)) return 'blocklist';
+  // Checked before extraction, not after: a paused page must never be read at
+  // all, the same rule §9 already applies to the blocklist below.
+  const { blockedCategories, paused } = await captureSettings();
+  if (paused) return 'paused';
+  if (blockedCategories.length > 0 && isSensitive(url, blockedCategories)) return 'blocklist';
 
   // A page still loading its title is not worth capturing yet; the dwell timer
   // gives it 30s to settle regardless.

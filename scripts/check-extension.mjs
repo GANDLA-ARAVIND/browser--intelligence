@@ -87,9 +87,15 @@ if (serviceWorker) {
 }
 check(manifest.background?.type === 'module', 'service worker is type: module', manifest.background?.type ?? '(unset)');
 
-for (const page of ['offscreen.html', 'dashboard.html']) {
+for (const page of ['offscreen.html', 'dashboard.html', 'popup.html']) {
   check(existsSync(join(DIST, page)), `page exists: ${page}`);
 }
+
+check(
+  typeof manifest.action?.default_popup === 'string',
+  'action.default_popup declared',
+  manifest.action?.default_popup ?? '(missing)'
+);
 
 // Content scripts are classic scripts, not modules. An `import` statement in
 // the emitted file is a syntax error the moment Chrome injects it, and the
@@ -153,7 +159,7 @@ for (const entry of manifest.content_scripts ?? []) {
 }
 
 // --- every local src/href in the built HTML resolves -------------------------
-for (const page of ['offscreen.html', 'dashboard.html']) {
+for (const page of ['offscreen.html', 'dashboard.html', 'popup.html']) {
   const file = join(DIST, page);
   if (!existsSync(file)) continue;
   const html = readFileSync(file, 'utf8');

@@ -431,3 +431,50 @@ li[data-state="fail"] .dot {
   color: var(--muted);
   font-size: 0.875rem;
 }
+
+.remove-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.9rem;
+  margin: 0.9rem 0;
+}
+
+.remove-range label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.remove-range input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+}
+
+.remove-list {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+.remove-list label {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.remove-title {
+  overflow-wrap: anywhere;
+}

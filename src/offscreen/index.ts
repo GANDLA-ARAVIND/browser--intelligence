@@ -53,6 +53,10 @@ function handle(message: Message): Promise<Response> | Response | undefined {
         error: error instanceof Error ? error.message : String(error),
       }));
 
+    case 'INVALIDATE_SEARCH':
+      invalidateSearchIndex();
+      return { ok: true, accepted: true };
+
     case 'RUN_BACKFILL': {
       if (running) return { ok: true, accepted: false, reason: 'a backfill is already running' };
       running = true;

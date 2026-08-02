@@ -104,6 +104,7 @@ export default defineConfig({
       input: {
         dashboard: at('dashboard.html'),
         offscreen: at('offscreen.html'),
+        popup: at('popup.html'),
         background: at('src/background/index.ts'),
       },
       output: {

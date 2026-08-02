@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { Backfill } from './Backfill.js';
 import { CaptureHealth } from './CaptureHealth.js';
 import { Captures } from './Captures.js';
+import { DataSettings } from './DataSettings.js';
 import { PrivacySettings } from './PrivacySettings.js';
+import { RemovePages } from './RemovePages.js';
 import { WhatWasDropped } from './WhatWasDropped.js';
 import { Search } from './Search.js';
 import { sendMessage } from '../platform/browser.js';
@@ -103,7 +105,11 @@ export function App(): React.JSX.Element {
 
       <Backfill />
 
+      <RemovePages />
+
       <PrivacySettings />
+
+      <DataSettings />
 
       <WhatWasDropped />
 

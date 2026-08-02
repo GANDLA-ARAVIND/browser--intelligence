@@ -158,6 +158,7 @@ export function onStartup(handler: () => void): void {
   chrome.runtime.onStartup.addListener(handler);
 }
 
-export function onActionClicked(handler: () => void): void {
-  chrome.action.onClicked.addListener(handler);
-}
+// No onActionClicked wrapper: the manifest declares a `default_popup`, and
+// `chrome.action.onClicked` never fires while one is set. The popup calls
+// openDashboard() directly instead — popup pages are a privileged extension
+// context with the same chrome.tabs/chrome.windows access as the background.
