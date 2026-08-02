@@ -144,7 +144,7 @@ interface PageRecord {
   vectorSource: 'title'|'text';  // which field the vector came from — see §14
 
   format: Format;          // from domain rules
-  topics: string[];        // from zero-shot similarity
+  topics: string[];        // from derived clusters ONLY — never a seed label (§5, §6)
   intent?: Intent;         // hybrid: domain + dwell + return count
   extractionTier: 1|2|3|4; // which rung SUPPLIED the text — see §8
   extractionQuality?: ExtractionQuality;  // absent on backfill: nothing to assess
@@ -202,26 +202,37 @@ capture → extract → embed → classify → store
                     [weekly] cluster → label → promote to topics
 ```
 
-**Categorisation requires no LLM.** It is cosine arithmetic against
-pre-embedded label vectors. Only *prose summaries* and *cluster naming* need
-a language model, and both are optional and batched.
+**Categorisation requires no LLM.** Topics come from unsupervised clustering
+over embeddings. Only *prose summaries* and *cluster naming* need a language
+model, and both are optional and batched.
 
-### Zero-shot classification
+### Seed labels are a weak prior, never a classifier
 
-Embed topic labels once. Every page then cosine-matches against them:
+**Clustering is the classification mechanism.** An earlier design matched each
+page against ~25 pre-embedded seed labels and tagged anything over ~0.40. That
+was measured across 5,374 real pages and **the whole approach was rejected, not
+just the number** (§14, DECISIONS.md).
 
-```ts
-similarity(pageVec, topics['Docker'])     // → 0.81  ✓ tag it
-similarity(pageVec, topics['Networking']) // → 0.67  ✓ tag it
-similarity(pageVec, topics['React'])      // → 0.09  ✗
-```
+The short version: page→label cosine produces *confidently wrong* answers, so
+no threshold and no ranking rule fixes it.
 
-Threshold ~0.40 — **unverified, and quite possibly wrong.** Measured
-title↔title similarity runs far below it (same-topic median 0.194), and
-title↔label is a different distribution that has never been measured. Do not
-build Phase 3 on this number without measuring it first (§14). Sub-threshold
-pages go to the **unclassified pool** — this is not a failure, it is the
-discovery queue.
+- At 0.40, **13.3%** of the corpus classifies. The other 87% lands in the
+  "discovery queue", which means the queue is the corpus.
+- Lowering it does not help. Correct-label scores span **0.091 to 0.473**, so
+  no cutoff separates right from wrong — 0.25 rejects three correct top-1
+  matches while admitting confident errors.
+- Rank-and-margin does not rescue it either, which is the trap, because that
+  *is* the fix that worked for clustering. `Application History | Mynaukri`
+  scores **0.467 on `history` with a 0.277 margin** — above every threshold
+  considered and in the top decile of margins — purely from the word "History".
+  Margin measures separation, not correctness.
+
+So seeds do exactly one job: **keep day one non-empty.** They may inform
+ordering or act as a tie-break hint on an otherwise-unlabelled page. They are
+**never displayed to the user as a topic**, never stored as a confirmed
+`topics[]` entry, and never treated as ground truth by anything downstream.
+
+**Only a derived cluster becomes a displayed topic** (§6).
 
 ### Clustering
 
@@ -281,17 +292,31 @@ remains pure overhead well past any realistic corpus — years of browsing.
 
 ## 6. Taxonomy — two tiers
 
-**Tier 1 — universal seeds (~25 labels, shipped).** programming, health,
-finance, travel, cooking, sports, news, education, shopping, entertainment,
-design, science, legal, career, etc. Every user has these on day one, so
-nothing is ever fully unclassified.
+**Tier 1 — universal seeds (~25 labels, shipped, `src/lib/topics.ts`).**
+programming, health, finance, travel, cooking, sports, news, education,
+shopping, entertainment, design, science, legal, career, etc.
 
-**Tier 2 — derived.** Built from the user's own data via clustering. Docker,
-Rust, guitar gear, visa paperwork — whatever they actually browse.
+**They are a prior, not a taxonomy.** Measurement showed page→label cosine is
+confidently wrong often enough that a seed label cannot be shown as fact (§5,
+§14). Their whole job is that day one is not empty: something to order an
+otherwise-unlabelled corpus by, and a hint the derived tier can use. A seed
+name never appears in the UI as a topic, and never lands in `topics[]` as a
+confirmed assignment.
+
+**Tier 2 — derived, and the only real taxonomy.** Built from the user's own
+data via clustering. Docker, Rust, guitar gear, visa paperwork — whatever they
+actually browse. **A topic exists only once a cluster produced it.** This is
+the mechanism, not a refinement layered on top of one.
 
 The install-time history backfill (§10) is a **bootstrap, not a definition**.
 The taxonomy is never frozen; new interests surface through the unclassified
 pool within days.
+
+**The seed list stays universal, and expanding it is not the fix.** Writing
+richer label text ("programming, software development, writing code") was
+measured: judged accuracy rose 12/20 → 14/20, but the distribution did not lift
+and programming got *worse*. It also starts smuggling domain knowledge into the
+one hardcoded list this section forbids from carrying any (DECISIONS.md).
 
 Critically: **nothing in the pipeline contains domain knowledge.** Extraction
 is universal, embeddings were trained on the whole web, clustering is
@@ -533,8 +558,19 @@ threshold from directly; recalibrate once real captures accumulate at scale.
 See DECISIONS.md for the full measurement.
 
 ### Phase 3 — Intelligence (week 3)
-Zero-shot classification, clustering, cluster labeling, topic promotion,
-session reconstruction.
+Clustering, cluster labeling, topic promotion, session reconstruction.
+
+**Step 1 is complete, with a negative result.** Zero-shot classification was
+measured before being built and **rejected outright** — not retuned (§5, §14,
+DECISIONS.md). Its deliverable is a design decision, not a classifier: the ~25
+seed labels ship in `src/lib/topics.ts` as a **weak prior** that keeps day one
+non-empty, and never appear to the user as a topic.
+
+**Clustering is therefore the primary classification mechanism, not a
+supplement to zero-shot.** Nothing downstream may assume a page arrives with a
+usable label; the unclassified pool is the normal state until a cluster forms.
+This raises the stakes on the two warnings below — they are no longer one
+signal among several.
 
 **Detect passive-media SESSIONS, not passive pages.** Signature: multiple
 sequential pages, same domain, `activeSeconds` ~0 across all of them, and short
@@ -654,7 +690,7 @@ true now* and *what you must do*.
 |---|---|
 | Clustering keys on neighbour *rank*, not an absolute cosine cutoff | Measured on MiniLM title embeddings: same-topic pairs median 0.194, cross-topic median 0.021 — the separation is real but the absolute scale is dataset-specific, so a fixed threshold does not transfer |
 | Boilerplate title suffixes are derived from the data, never hardcoded | "- YouTube" on 800 titles clusters on the suffix, and §4 is explicit that a domain is not a category — but a hardcoded suffix list would violate §6, so frequency across the user's own titles decides |
-| §5's ~0.40 zero-shot threshold is unverified | Title↔title similarity measures far below 0.40. Title↔label is a different distribution, but the 0.40 figure must be measured before Phase 3 depends on it |
+| **Zero-shot page→label matching is DISPROVEN as a classifier — seeds are a weak prior only** | Measured on 5,374 real pages against 25 seed labels. §5's ~0.40 classifies **13.3%** of the corpus, sending 87% to a "discovery queue" that is therefore the corpus. **Lowering it does not help:** correct-label scores span **0.091–0.473**, so no cutoff separates right from wrong — 0.25 rejects the correct label on the biryani page (0.091), the film trailer (0.097) and *"Longest Substring Without Repeating Characters"* (0.140, which ranked #1 correctly). **Rank-and-margin does not rescue it, and this is the trap** — it is the fix that worked for clustering and it will be proposed again: `Application History \| Mynaukri` scores **0.467 on `history` with a 0.277 margin**, above every threshold considered and in the top decile of margins, entirely from lexical overlap with the word "History". Margin measures *separation*, not *correctness*. Clustering's failure was scale drift; this failure is confident wrongness — different problem, same-looking symptom. **Structural reason:** ~1,100 LeetCode/NeetCode pages where `3Sum` → business and `Two Sum` → finance, because those titles are about arithmetic and objects and nothing in them lexically resembles "programming"; a 64-token title has no path to that inference. Seeds now do one job — keep day one non-empty — and are **never displayed as a topic label**. Clustering is the classification mechanism (§5, §6) |
 | **Standing rule: any string-based heuristic must be tested against Telugu, Chinese and Arabic before it ships** | Five instances so far, each of which would have silently deleted or misjudged non-English content: (1) the `\W`-based empty-title check — JS `\W` is ASCII-only, so every title written entirely in a non-Latin script matched "no word characters" and was dropped; (2) the bare-URL rule, whose first draft keyed on "no whitespace", which is *normal* in Chinese, Japanese and Thai; (3) the English stopword list in quality scoring, which had to be skipped rather than replaced with a neutral value, or every non-English page reads as navigation chrome. **(4)** the sentence-terminator class, which covered Latin, CJK and Devanagari but not Arabic/Urdu (U+061F, U+06D4) — and Thai, Lao, Khmer and Myanmar end sentences with a *space*, so zero terminator density there is normal prose. **(5)** the 400-*character* usable-content floor: the same paragraph is 123 characters in Chinese and 368 in English, a measured ~3× density difference, so a character floor rejects genuine CJK prose as too short. Replaced with script-neutral **units** (one CJK character, or one whitespace token elsewhere) — the word tokenizer had the mirror bug, matching an entire unspaced Chinese sentence as one token and inflating terminator density to 57 per 100 "words" against 6.7 for the same English. The failure mode is always the same and always silent. **Instances 4 and 5 were caught by this rule during pre-ship testing rather than in production, which is the rule working.** Seven-script audit now passes: Chinese 0.90, Telugu 0.86, Japanese 0.79, Hindi 0.77, Urdu 0.70, Arabic 0.60, Thai 0.45 — none rejected |
 | **A score built from fewer components is less trustworthy, and nothing currently says so** | Dropping inapplicable components fixed the *bias* but introduced a *confidence* problem: Thai loses both the stopword and terminator components, so its 0.45 rests on **one** signal, while Chinese 0.90 rests on three — and the two render identically in the UI and compare as equals in the ladder's best-of-poor tie-break. A one-component score is close to "length, renamed". Arabic scoring `weak` at 78 units may be the same artifact rather than a real quality signal. **Not fixed.** Store the contributing-component count alongside the score, display it, and treat a low-component score as weak evidence rather than a measurement — including in the ladder, where a three-component 0.60 should probably beat a one-component 0.64 |
 | An inapplicable metric component must be **dropped and its weight redistributed**, never scored as zero | Scoring a signal that does not exist for the input at zero is indistinguishable from measuring it and finding nothing. Thai prose has no sentence terminators at all, so a zeroed terminator component scored real Thai writing at 0.29 and rejected it. The same mistake was made twice in one function: the stopword component was already being excluded for non-Latin text while the terminator component was still being zeroed. Components now carry weights that are summed only over those that apply |

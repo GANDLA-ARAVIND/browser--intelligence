@@ -249,7 +249,7 @@ function toRecord(page: Page, vector: Float32Array): PageRecord {
     vector: new Float32Array(vector), // copy: subarray shares the batch buffer
     vectorSource: 'title',
     format: classifyFormat(page.url),
-    topics: [], // zero-shot classification is phase 3
+    topics: [], // populated by cluster promotion in phase 3; seeds never land here (§5, §6)
     // A page whose embedText is not its title was rescued by path extraction,
     // which is tier 4 by definition.
     extractionTier: page.embedText === page.title ? TITLE_ONLY_TIER : PATH_DERIVED_TIER,
