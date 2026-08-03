@@ -8,15 +8,46 @@ import type { ClusterRecord, PageRecord } from '../lib/storage.js';
  * hand-rolled SVG because a single topic's own shape does not need a charting
  * library, but comparing 8+ topics on one shared weekly axis, stacked, with a
  * legend and a tooltip, is exactly what one is for.
+ *
+ * **"Other" is not drawn.** An earlier version stacked it in as a ninth band
+ * and the real corpus broke it immediately: 92 of 100 clusters fold into
+ * "Other," so its page volume dwarfed the eight named ones and compressed
+ * them into a strip at the bottom of the chart — the one thing this chart
+ * exists to show (which topics rose and fell) became the hardest thing to
+ * see in it. Two fixes were tried and rejected before this one (DECISIONS.md
+ * has the full comparison): raising the cap to 15 moved the needle from
+ * ~8–13% of chart height to ~10–17%, not a fix, because almost any fixed N
+ * leaves a long tail dominant; drawing "Other" as an unstacked outline
+ * instead of a filled band didn't help either, because it still shares the
+ * Y-axis with everything else — the axis has to stretch to fit *its* raw
+ * value regardless of whether it is filled or stroked, so the named bands
+ * end up exactly as compressed as before. The domination is an axis-domain
+ * problem, not a fill-style problem, so the fix drops "Other" from the axis
+ * domain entirely rather than restyling it. The caption below states its
+ * total as a number instead.
  */
 const TOP_TOPICS = 8;
-const OTHER_KEY = 'other';
 
-/** A fixed qualitative palette, sized to `TOP_TOPICS` so no hue repeats
- *  across the bands that actually get their own colour. "Other" always uses
- *  `var(--muted)` instead — it is an overflow bucket, not a topic, and
- *  should never compete visually with a real one. */
-const PALETTE = ['#4C6EF5', '#12B886', '#F59F00', '#E64980', '#7048E8', '#15AABF', '#FA5252', '#82C91E'];
+/**
+ * The dataviz skill's validated default categorical palette (`palette.md`),
+ * referenced through the CSS custom properties defined in `index.css` rather
+ * than hardcoded here — `--series-1`..`--series-8` swap their hex per
+ * `prefers-color-scheme` the same way every other token in this file does.
+ * An earlier version hand-picked eight hex values and never ran them through
+ * `validate_palette.js`; they failed the lightness-band check outright and
+ * warned on contrast for half the set. This order clears every adjacent CVD
+ * and normal-vision gate in both light and dark.
+ */
+const SERIES_VARS = [
+  '--series-1',
+  '--series-2',
+  '--series-3',
+  '--series-4',
+  '--series-5',
+  '--series-6',
+  '--series-7',
+  '--series-8',
+];
 
 function startOfWeek(ts: number): number {
   const d = new Date(ts);
@@ -36,24 +67,30 @@ interface Series {
   color: string;
 }
 
+interface WeeklyChartData {
+  data: Array<Record<string, number | string>>;
+  series: Series[];
+  /** Clustered pages outside the top `TOP_TOPICS` — smaller named topics and
+   *  every unlabelled cluster. Stated in the caption as a number; never drawn
+   *  (see the module comment above for why). */
+  excludedPages: number;
+  excludedPct: number;
+}
+
 /**
- * Builds one row per week, one column per series. Two population decisions,
- * both deliberate:
+ * Builds one row per week, one column per series — the top `TOP_TOPICS`
+ * labelled clusters by total page count, and nothing else. Two population
+ * rules carried over from the first version, still load-bearing:
  *
- *  - Only **labelled** clusters can hold their own band (§14: a cluster never
- *    displays a name it did not derive, and a legend has no room for an
- *    unlabelled cluster's fallback of three titles anyway) — unlabelled
- *    clusters fold into "Other" regardless of size.
+ *  - Only **labelled** clusters can ever hold a band (§14: a cluster never
+ *    displays a name it did not derive) — an unlabelled cluster is excluded
+ *    the same as any smaller labelled one, never given a fallback name here.
  *  - Pages with no `clusterId` at all (§5's discovery queue — never
- *    clustered, not a small topic) are **excluded entirely**, not folded into
- *    "Other". "Other" means "a real topic that didn't make the top N"; a page
- *    with no topic at all is a different fact, and blending the two would
- *    make "Other" answer two different questions at once.
+ *    clustered) are excluded from `excludedPages` too, not folded in: that
+ *    figure means "a real topic that didn't make the top N," and a page with
+ *    no topic at all is a different fact.
  */
-function buildWeeklyData(
-  clusters: ClusterRecord[],
-  pages: PageRecord[]
-): { data: Array<Record<string, number | string>>; series: Series[] } {
+function buildWeeklyData(clusters: ClusterRecord[], pages: PageRecord[]): WeeklyChartData {
   const pagesByCluster = new Map<string, PageRecord[]>();
   for (const page of pages) {
     if (page.clusterId === undefined) continue;
@@ -72,30 +109,29 @@ function buildWeeklyData(
   const topIds = new Set(top.map((entry) => entry.cluster.id));
 
   const weekTotals = new Map<number, Map<string, number>>();
-  let otherCount = 0;
+  let totalClustered = 0;
+  let excludedPages = 0;
   for (const page of pages) {
-    if (page.clusterId === undefined) continue; // no topic at all — excluded, not "Other"
-    const seriesKey = topIds.has(page.clusterId) ? page.clusterId : OTHER_KEY;
-    if (seriesKey === OTHER_KEY) otherCount++;
+    if (page.clusterId === undefined) continue; // no topic at all — not counted either way
+    totalClustered++;
+    if (!topIds.has(page.clusterId)) {
+      excludedPages++;
+      continue; // not drawn — see the module comment for why
+    }
     const week = startOfWeek(page.lastVisit);
     let bucket = weekTotals.get(week);
     if (bucket === undefined) {
       bucket = new Map();
       weekTotals.set(week, bucket);
     }
-    bucket.set(seriesKey, (bucket.get(seriesKey) ?? 0) + 1);
+    bucket.set(page.clusterId, (bucket.get(page.clusterId) ?? 0) + 1);
   }
 
   const series: Series[] = top.map((entry, index) => ({
     key: entry.cluster.id,
     label: entry.cluster.label,
-    color: PALETTE[index % PALETTE.length]!,
+    color: `var(${SERIES_VARS[index % SERIES_VARS.length]!})`,
   }));
-  // Only a real fact about the data, not a fixture of the top-N mechanism: a
-  // corpus with `TOP_TOPICS` or fewer named topics and no unlabelled overflow
-  // has nothing to put in "Other", and a legend swatch for a band that is
-  // zero in every week would claim a category exists that does not.
-  if (otherCount > 0) series.push({ key: OTHER_KEY, label: 'Other', color: 'var(--muted)' });
 
   const weeks = [...weekTotals.keys()].sort((a, b) => a - b);
   const data = weeks.map((week) => {
@@ -105,7 +141,12 @@ function buildWeeklyData(
     return row;
   });
 
-  return { data, series };
+  return {
+    data,
+    series,
+    excludedPages,
+    excludedPct: totalClustered > 0 ? (excludedPages / totalClustered) * 100 : 0,
+  };
 }
 
 /**
@@ -135,7 +176,7 @@ export function TopicsOverTimeChart({
   clusters: ClusterRecord[];
   pages: PageRecord[];
 }): React.JSX.Element | null {
-  const { data, series } = useMemo(() => buildWeeklyData(clusters, pages), [clusters, pages]);
+  const { data, series, excludedPages, excludedPct } = useMemo(() => buildWeeklyData(clusters, pages), [clusters, pages]);
 
   // Nothing clustered yet — the grid's own empty state already covers this
   // message, so the chart just stays absent rather than rendering an empty axis.
@@ -185,7 +226,15 @@ export function TopicsOverTimeChart({
         </AreaChart>
       </ResponsiveContainer>
       <p className="detail topics-chart-caption">
-        Pages per week, by topic — top {TOP_TOPICS} by page count, everything else grouped as "Other".
+        Pages per week, for your top {Math.min(TOP_TOPICS, series.length)} topics by page count.
+        {excludedPages > 0 && (
+          <>
+            {' '}
+            A further <strong>{excludedPages.toLocaleString()} pages</strong> ({excludedPct.toFixed(0)}% of
+            clustered browsing) sit in smaller or unlabelled topics and aren't drawn here — see the cards
+            below for those.
+          </>
+        )}{' '}
         Backfilled pages carry only their <em>last</em> visit (§15), so a page read across several weeks
         appears as a single point in its most recent week, not spread across the weeks it was actually
         read — this is a last-touch timeline, not a reading timeline.

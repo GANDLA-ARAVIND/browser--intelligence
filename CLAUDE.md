@@ -742,27 +742,49 @@ same thing this project already noticed from the same evidence.
 on the Topics tab. A Recharts stacked area chart, weeks on the X axis, pages
 on the Y axis (labelled explicitly — constraint 1 of this step, and the same
 unit rule step 3 already applies to the cards) — one band per topic, the top
-8 by page count, everything else folded into an "Other" band. **Recharts is
-the dependency this step earns**: the per-card sparklines stay hand-rolled
-SVG because one topic's own shape does not need a charting library, but
-comparing 8+ topics on a shared weekly axis, stacked, with a legend and a
-tooltip, is exactly what one is for — added as a real `dependencies` entry
-(`TopicsOverTimeChart.tsx`), not a dev-only or optional one, since it ships in
-the built dashboard bundle. A stacked area is the deliberate exception to
-§12's general "prefer horizontal bars over pie charts" — this is a case a
-stacked area is the *correct* chart, not the one being reached for by habit.
+8 by page count. **Recharts is the dependency this step earns**: the
+per-card sparklines stay hand-rolled SVG because one topic's own shape does
+not need a charting library, but comparing 8 topics on a shared weekly axis,
+stacked, with a legend and a tooltip, is exactly what one is for — added as a
+real `dependencies` entry (`TopicsOverTimeChart.tsx`), not a dev-only or
+optional one, since it ships in the built dashboard bundle. A stacked area is
+the deliberate exception to §12's general "prefer horizontal bars over pie
+charts" — this is a case a stacked area is the *correct* chart, not the one
+being reached for by habit.
 
-Only **labelled** clusters can hold their own band; an unlabelled cluster
-folds into "Other" regardless of size, because a legend has no room for its
-three-titles-plus-count fallback (§14) the way a card does — showing that
-fallback in a legend swatch would be a different unnamed-cluster problem in a
-new place. Pages with no `clusterId` at all — never clustered, §5's discovery
-queue — are excluded from the chart entirely rather than folded into "Other":
-"Other" answers "a real topic that didn't make the top 8", which is a
-different question from "not in any topic," and blending the two would make
-one band answer both. The "Other" band itself only appears when it would
-actually contain something, so a corpus with 8 or fewer named topics and no
-unlabelled overflow never shows an always-zero legend entry.
+**"Other" is not drawn, on real-corpus evidence.** The first version stacked
+everything past the top 8 into a ninth "Other" band, and the real corpus
+broke it on first use: 92 of 100 clusters fold into "Other," so its page
+volume dwarfed the eight named ones and compressed them into a strip at the
+bottom of the chart — the one thing the chart exists to show (which topics
+rose and fell) became the hardest thing to see in it. Two fixes were
+prototyped side by side against synthetic data shaped like the same skew
+before picking one (DECISIONS.md has the comparison): raising the cap to 15
+moved named topics from ~8–13% of chart height to ~10–17% — a real change,
+not a fix, since almost any fixed N leaves a long tail dominant; drawing
+"Other" as an unstacked outline instead of a filled band didn't help at all,
+because it still shares the Y axis with everything else — the axis has to
+stretch to fit its raw value whether it is filled or stroked, so the named
+bands end up exactly as compressed either way. The domination is an
+**axis-domain** problem, not a fill-style one, so "Other" is excluded from
+the chart's data entirely rather than restyled: only the top 8 labelled
+clusters are plotted, and the axis autoscales to their own range. A caption
+line states what was excluded as a number — pages and a percentage of
+clustered browsing — rather than drawing it, so the omission is stated, not
+silent. Only **labelled** clusters can ever hold a band — an unlabelled
+cluster is excluded the same as any smaller labelled one, never given the
+cards' three-titles-plus-count fallback here, since a legend swatch has no
+room for it (§14).
+
+**The categorical palette is the dataviz skill's validated default, not
+hand-picked.** The first version used eight hex values chosen by eye; run
+through `validate_palette.js` after the fact, they failed the lightness-band
+check outright and warned on contrast for half the set — the exact
+"eyeballing colorblind-safety" anti-pattern the skill warns against. Replaced
+with the documented default order (blue, orange, aqua, yellow, magenta,
+green, violet, red), stored as `--series-1`..`--series-8` in `index.css`
+alongside every other theme token, stepped separately for light and dark and
+validated in both.
 
 Small print beneath the chart states the same last-touch-vs-reading-timeline
 caveat §15 already documents for sessions, applied here: a backfilled page's

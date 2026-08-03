@@ -7,6 +7,22 @@
   --ok: #1a7f4b;
   --fail: #b4342b;
   --pending: #8a9099;
+
+  /* Validated categorical palette for charts with 2+ series (currently just
+     the topics-over-time chart). Order and hues are the dataviz skill's
+     documented default (blue, orange, aqua, yellow, magenta, green, violet,
+     red) — run through validate_palette.js rather than hand-picked: it
+     clears the lightness band, the chroma floor, adjacent CVD (protan/deutan/
+     tritan) and normal-vision separation, and 3:1 contrast in both modes.
+     Never reorder or swap a slot without re-running the validator. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,6 +35,17 @@
     --ok: #4ac585;
     --fail: #ef7f75;
     --pending: #767d87;
+
+    /* Same eight hues, stepped for the dark surface — a separate validator
+       run, not a mechanical invert. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
   }
 }
 
