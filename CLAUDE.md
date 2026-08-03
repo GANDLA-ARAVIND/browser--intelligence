@@ -674,7 +674,8 @@ support, not the compute the isolation rule keeps out of this context.
 **Four surfaces behind top-level navigation** — Search (default), Topics,
 Today, Settings — replacing a single scrolling page that put wiring probes,
 stage timings, a stall table and a filter-drop audit ahead of the primary
-surface §1 names. Topics and Today are placeholders until steps 2 and 3.
+surface §1 names. Today is a placeholder until step 2; Topics (step 3) is
+built below.
 Settings holds backfill, blocked categories, retroactive removal, export and
 delete-range — the controls someone actually reaches for — plus a collapsed
 **Diagnostics** section (`Diagnostics.tsx`) holding everything that moved out
@@ -707,6 +708,39 @@ and `clusterByMutualKnnChunked`; a cancelled run returns `null` rather than a
 fabricated `BackfillSummary`. The manual "Start backfill" / "Run again" button
 in Settings is unaffected and stays the only re-run path — first-run never
 shows a second time once a `BackfillSummary` exists.
+
+**Step 3 (Topics) is complete.** A grid of topic cards — derived label, page
+count, last touched, a per-card sparkline of activity over its own time range
+— and a detail view per card: every page chronologically, and a "best
+resources" list ranked by `visitCount`, the strongest relevance signal §4
+names. Sorted by page count, descending, by default, per §12.
+
+Two §14 rules apply directly to this surface, not just to the pipeline that
+feeds it:
+
+- **A cluster never displays a name it did not derive.** An unlabelled
+  cluster's card shows its three most-visited titles plus a count of the rest
+  (`"X · Y · Z +92 more"`) instead of a name, set apart in the card and the
+  detail header by weight and colour so it never reads as a confident,
+  chosen name the way a real label does — never "Cluster 7", never
+  "Untitled".
+- **State the unit.** This is the fifth unit-mixing instance §14 already
+  records elsewhere, applied here before it could happen a sixth time: a
+  topic's page count comes from grouping `PageRecord.clusterId` directly,
+  never from `ClusterRecord.size` (a snapshot from the last clustering run
+  that a retroactive deletion can go stale against) and never from
+  `memberIds.length` (the collapsed-node count, one per near-duplicate group,
+  not one per page). Every count on this surface is pages, and says so.
+
+**Cluster #1 — the ~323-page temple/Google-Maps cluster §14 documents as the
+proper-noun over-merge — renders exactly like every other topic, unfixed and
+un-special-cased.** Its ugly label is the diagnostic that the failure mode is
+real, and hiding it here would remove the one place a user could notice the
+same thing this project already noticed from the same evidence.
+
+Not built this step, deliberately: the topics-over-time stacked-area chart
+(§12) compares across every topic on one shared timeline and is a distinct
+piece of work from a single card's own sparkline; it is next.
 
 **Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
 these are quality gaps found on real queries. Status as of step 1's full

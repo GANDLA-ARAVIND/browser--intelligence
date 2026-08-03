@@ -784,6 +784,88 @@ tr[data-missing='true'] td:first-child {
   color: var(--fg);
 }
 
+/* --- topics (§12) ------------------------------------------------------ */
+
+.topic-grid {
+  list-style: none;
+  margin: 1.4rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.9rem;
+}
+
+.topic-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+}
+
+.topic-card:hover {
+  border-color: var(--muted);
+}
+
+.topic-card-name {
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* A cluster with no derived label shows its own titles instead (§14) — set
+   apart in weight and colour so it never reads as a confident, chosen name. */
+.topic-card-name-fallback {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--muted);
+}
+
+.topic-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.sparkline {
+  width: 100%;
+  height: 26px;
+  display: block;
+}
+
+.sparkline rect {
+  fill: var(--ok);
+}
+
+.topics-page h1 {
+  margin-bottom: 0.3rem;
+}
+
+.topic-back {
+  margin-bottom: 1rem;
+}
+
+/* Same treatment as the card version, at heading scale. */
+h1.topic-detail-name-fallback {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--muted);
+  font-size: 1.4rem;
+}
+
+.topics-page .panel {
+  margin-top: 1.4rem;
+}
+
 /* --- diagnostics (Settings, collapsed) -------------------------------- */
 
 .diagnostics {

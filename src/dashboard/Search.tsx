@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { FORMATS, type Format } from '../lib/format.js';
 import { getAllClusters, getAllPages, openDatabase } from '../lib/storage.js';
-import { resourceUrl, sendMessage } from '../platform/browser.js';
+import { sendMessage } from '../platform/browser.js';
 import type { SearchFilters, SearchHit, SearchResponse } from '../platform/messages.js';
+import { faviconUrl } from './favicon.js';
 
 const LIMIT = 20;
 /** How many domains to offer in the filter's suggestion list — the corpus can hold hundreds. */
@@ -28,14 +29,6 @@ function toSearchFilters(state: FilterState): SearchFilters | undefined {
   if (state.topicClusterId !== '') filters.topicClusterId = state.topicClusterId;
   if (state.domain.trim() !== '') filters.domain = state.domain.trim();
   return Object.keys(filters).length > 0 ? filters : undefined;
-}
-
-function faviconUrl(pageUrl: string): string {
-  // Chrome's local favicon cache, not a network request — the "favicon"
-  // permission serves this from what the browser already has for pages the
-  // user visited, so it costs nothing against §2.1's "nothing leaves the
-  // machine" (no third-party favicon service, which would).
-  return resourceUrl(`_favicon/?pageUrl=${encodeURIComponent(pageUrl)}&size=32`);
 }
 
 interface TopicFacet {
