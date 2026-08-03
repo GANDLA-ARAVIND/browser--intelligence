@@ -106,18 +106,44 @@ export interface ClusterRecord {
 }
 
 /**
- * The last clustering run. `unclusteredPages` is the baseline the §7 trigger
- * measures growth against — without it, "pages with no cluster" is permanently
- * ~1,700 and the trigger fires forever.
+ * The last clustering run.
+ *
+ * **Nodes and pages are separate sub-objects on purpose.** Clustering operates
+ * on collapsed *nodes*; noise percentages from the Phase 0 harness are quoted
+ * in *pages*. A summary that put "104 clusters over 2,724 nodes" next to
+ * "2,414 pages unclustered" invited exactly one misreading — 2,414/2,724 as
+ * 87% noise — which is the corporate-blocklist unit error again (§14, and the
+ * `DROP_UNIT` row). Every count here belongs to a named unit and the two are
+ * never adjacent without labels.
+ *
+ * The three page buckets are also deliberately separate, because they answer
+ * different questions and only the middle one is comparable to a harness
+ * noise figure:
+ *
+ *  - `pages.noise` — considered by this run, landed in no cluster. **This is
+ *    the number to compare against Node's noise%.**
+ *  - `pagesNeverConsidered` — in the database but not in this run's input at
+ *    all (live captures since the last backfill, pages aged out of the history
+ *    window, anything filtered differently). Never had a chance to cluster.
+ *  - `unclusteredPages` — the sum of both, and the only one the §7 trigger
+ *    should use, since "pages with no topic" is what grows between runs.
  */
 export interface ClusteringSummary {
   key: 'clustering';
   completedAt: number;
-  nodes: number;
-  clusters: number;
-  /** Pages in no cluster at the moment this run finished. */
-  unclusteredPages: number;
   durationMs: number;
+  clusters: number;
+
+  /** Collapsed representatives — the unit clustering actually runs on. */
+  nodes: { total: number; clustered: number; noise: number };
+  /** Pages this run considered, expanded back out of those nodes. */
+  pages: { considered: number; clustered: number; noise: number };
+
+  /** Every page in the database with no `clusterId`. The §7 trigger baseline. */
+  unclusteredPages: number;
+  /** `unclusteredPages − pages.noise`: in the database, not in this run. */
+  pagesNeverConsidered: number;
+
   /** Absent when the run succeeded. */
   error?: string;
 }

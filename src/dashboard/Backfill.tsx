@@ -165,6 +165,89 @@ function formatMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
+const pctOf = (part: number, whole: number): string =>
+  whole === 0 ? '—' : `${((part / whole) * 100).toFixed(1)}%`;
+
+/**
+ * Clustering results, **with every count carrying its unit**.
+ *
+ * Nodes and pages are different units and a percentage in one is not
+ * comparable to a percentage in the other. An earlier version printed
+ * "104 clusters over 2,724 nodes · 2,414 pages unclustered" on one line and
+ * was immediately misread as 87% noise — the same unit-mixing error as the
+ * blocklist audit that reported 18 rows beside a 59-page difference (§14).
+ * Each row below states its unit, and the two are never adjacent unlabelled.
+ *
+ * `pagesNeverConsidered` is broken out because it is the bucket that makes the
+ * page figure look worse than the harness: pages sitting in the database that
+ * this run never had as input cannot cluster, and counting them as noise
+ * compares two different things.
+ */
+function ClusteringBreakdown({ clustering }: { clustering: ClusteringSummary | null }): React.JSX.Element | null {
+  if (clustering === null) return null;
+
+  if (clustering.error !== undefined) {
+    return (
+      <p className="error-note">
+        Clustering failed: {clustering.error}. The corpus is still stored and searchable; the next run
+        retries.
+      </p>
+    );
+  }
+
+  // A summary written before the unit split has `nodes` as a plain number.
+  if (typeof clustering.nodes !== 'object') {
+    return <p className="detail">Clustering ran, but before the unit breakdown existed. Re-run to see it.</p>;
+  }
+
+  const { nodes, pages } = clustering;
+  return (
+    <div className="timings">
+      <h3>Clustering</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>unit</th>
+            <th>total</th>
+            <th>clustered</th>
+            <th>noise</th>
+            <th>noise %</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>nodes (collapsed)</td>
+            <td>{nodes.total.toLocaleString()}</td>
+            <td>{nodes.clustered.toLocaleString()}</td>
+            <td>{nodes.noise.toLocaleString()}</td>
+            <td>{pctOf(nodes.noise, nodes.total)}</td>
+          </tr>
+          <tr>
+            <td>pages (this run)</td>
+            <td>{pages.considered.toLocaleString()}</td>
+            <td>{pages.clustered.toLocaleString()}</td>
+            <td>{pages.noise.toLocaleString()}</td>
+            <td>{pctOf(pages.noise, pages.considered)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="detail">
+        {clustering.clusters} clusters. Noise is §5&rsquo;s discovery queue, not a failure.
+        {clustering.pagesNeverConsidered > 0 && (
+          <>
+            {' '}
+            A further <strong>{clustering.pagesNeverConsidered.toLocaleString()} pages</strong> in the
+            database were not part of this run&rsquo;s input (live captures since the last backfill, or
+            pages outside the history window), so they are unclustered without having been considered —
+            counted in the {clustering.unclusteredPages.toLocaleString()} the re-cluster trigger watches,
+            but not in the noise figures above.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 /**
  * Enumerates every *expected* stage and marks the missing ones, rather than
  * enumerating only what was found (§14).
@@ -235,19 +318,7 @@ function Timings({
         </tbody>
       </table>
 
-      {clustering !== null && clustering.error === undefined && (
-        <p className="detail">
-          {clustering.clusters} clusters over {clustering.nodes.toLocaleString()} nodes ·{' '}
-          {clustering.unclusteredPages.toLocaleString()} pages unclustered (the discovery queue, not a
-          failure)
-        </p>
-      )}
-      {clustering?.error !== undefined && (
-        <p className="error-note">
-          Clustering failed: {clustering.error}. The corpus is still stored and searchable; the next
-          run retries.
-        </p>
-      )}
+      <ClusteringBreakdown clustering={clustering} />
       <p className="detail">
         Node ran multi-threaded native ONNX; this runs single-threaded WASM,
         which MV3&rsquo;s CSP requires.

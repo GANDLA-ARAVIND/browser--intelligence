@@ -303,34 +303,68 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
         });
 
         await replaceClusters(db, records, pageIdToCluster);
-        return { clusterCount: records.length, noisePages: expandGroups(groups, noise).length };
+
+        const noiseNodes = noise.length;
+        const noisePages = expandGroups(groups, noise).length;
+        return {
+          clusterCount: records.length,
+          noiseNodes,
+          clusteredNodes: groups.length - noiseNodes,
+          noisePages,
+          clusteredPages: pageIdToCluster.size,
+        };
       });
+
+      // Counted over the whole database, so it includes pages this run never
+      // saw. Kept distinct from `pages.noise` rather than conflated with it —
+      // they answer different questions and only one is comparable to the
+      // harness noise figure.
+      const unclusteredPages = await countUnclusteredPages(db);
 
       await putMeta(db, {
         key: 'clustering',
         completedAt: Date.now(),
-        nodes: groups.length,
-        clusters: outcome.clusterCount,
-        unclusteredPages: await countUnclusteredPages(db),
         durationMs: stageMs['cluster'] ?? 0,
+        clusters: outcome.clusterCount,
+        nodes: {
+          total: groups.length,
+          clustered: outcome.clusteredNodes,
+          noise: outcome.noiseNodes,
+        },
+        pages: {
+          considered: pages.length,
+          clustered: outcome.clusteredPages,
+          noise: outcome.noisePages,
+        },
+        unclusteredPages,
+        pagesNeverConsidered: Math.max(0, unclusteredPages - outcome.noisePages),
       } satisfies ClusteringSummary);
 
       emit({
         stage: 'clustering',
         done: groups.length,
         total: groups.length,
-        detail: `${outcome.clusterCount} clusters, ${outcome.noisePages} pages unclustered`,
+        detail:
+          `${outcome.clusterCount} clusters · ` +
+          `${outcome.noiseNodes}/${groups.length} nodes noise · ` +
+          `${outcome.noisePages}/${pages.length} pages noise`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[backfill] clustering failed; the corpus is still stored and searchable', error);
+      // Zeros here are honest: nothing clustered. `nodes.total` still reports
+      // what was *offered* to clustering, so a failure says how much work was
+      // on the table rather than erasing the attempt.
+      const unclusteredPages = await countUnclusteredPages(db).catch(() => 0);
       await putMeta(db, {
         key: 'clustering',
         completedAt: Date.now(),
-        nodes: groups.length,
+        durationMs: stageMs['cluster'] ?? 0,
         clusters: 0,
-        unclusteredPages: await countUnclusteredPages(db).catch(() => 0),
-        durationMs: 0,
+        nodes: { total: groups.length, clustered: 0, noise: groups.length },
+        pages: { considered: pages.length, clustered: 0, noise: pages.length },
+        unclusteredPages,
+        pagesNeverConsidered: Math.max(0, unclusteredPages - pages.length),
         error: message,
       } satisfies ClusteringSummary);
     }
