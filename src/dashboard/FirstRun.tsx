@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { BackfillStage } from '../lib/backfill.js';
+import type { BackfillProgress, BackfillStage } from '../lib/backfill.js';
 import { getAllClusters, openDatabase } from '../lib/storage.js';
 import { sendMessage } from '../platform/browser.js';
 import { useBackfillProgress } from './useBackfillProgress.js';
@@ -31,6 +31,34 @@ const TOPIC_POLL_MS = 400;
  * that budget is better spent already in Search than staring at "Done").
  */
 const AUTO_ADVANCE_MS = 1400;
+
+/**
+ * The one piece of plain-language progress worth adding *beyond* the stage
+ * label and the numeric bar — everything else `runBackfill` emits into
+ * `progress.detail` is written for the technical Settings › Diagnostics
+ * readout (raw node/page/noise counts, internal stage names) and must not
+ * leak onto the first screen a user ever sees. `clustering`'s own detail line
+ * is the motivating case — "95 clusters · 1066/2764 nodes noise · 1828/5149
+ * pages noise" — but every stage's `detail` was audited the same way, not
+ * just that one: `filtering`'s post-count line is fine in substance ("N of M
+ * pages kept") so it is kept, reworded; the rest (`loading-model`,
+ * `embedding`, `collapsing`, `writing`, `done`) either just restate their own
+ * `STAGE_LABEL` or expose internal vocabulary (`nodes`, `embedded`,
+ * `collapsing`) with nothing a first-time user needs, so they show nothing
+ * extra here — the label plus the numeric bar is enough.
+ */
+function friendlySubtext(progress: BackfillProgress, namedTopics: number): string {
+  switch (progress.stage) {
+    case 'filtering':
+      return progress.counts.kept > 0
+        ? `${progress.counts.kept.toLocaleString()} of ${progress.counts.rawRows.toLocaleString()} pages kept so far`
+        : '';
+    case 'clustering':
+      return namedTopics > 0 ? `${namedTopics.toLocaleString()} topics found` : '';
+    default:
+      return '';
+  }
+}
 
 /**
  * The screen a genuine fresh install lands on (§10, §14). Explains what is
@@ -88,6 +116,7 @@ export function FirstRun({ onComplete }: { onComplete: () => void }): React.JSX.
   const isFinished = FINISHED.includes(progress.stage);
   const percent = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
   const { counts } = progress;
+  const subtext = friendlySubtext(progress, namedTopics);
 
   return (
     <div className="first-run">
@@ -102,7 +131,7 @@ export function FirstRun({ onComplete }: { onComplete: () => void }): React.JSX.
 
         <div className="actions" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>
           <span className="detail first-run-stage">{STAGE_LABEL[progress.stage]}</span>
-          {progress.detail !== '' && <span className="detail"> · {progress.detail}</span>}
+          {subtext !== '' && <span className="detail"> · {subtext}</span>}
         </div>
 
         <div
@@ -160,7 +189,7 @@ export function FirstRun({ onComplete }: { onComplete: () => void }): React.JSX.
           )}
           {isFinished && (
             <button type="button" onClick={onComplete}>
-              Go to Search
+              Start searching
             </button>
           )}
         </div>
