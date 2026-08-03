@@ -36,7 +36,58 @@ body {
 main {
   max-width: 46rem;
   margin: 0 auto;
-  padding: 4rem 1.5rem;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+/* --- top nav ---------------------------------------------------------- */
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.75rem;
+  padding: 0.85rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.top-nav-brand {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: auto;
+}
+
+.top-nav-tabs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 0.3rem;
+}
+
+.top-nav-tab {
+  font: inherit;
+  font-size: 0.875rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 0.35rem 0.9rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.top-nav-tab:hover {
+  color: var(--fg);
+}
+
+.top-nav-tab-active {
+  color: var(--fg);
+  background: var(--panel);
+  border-color: var(--line);
+  font-weight: 600;
+}
+
+.placeholder-page {
+  margin-top: 1rem;
 }
 
 h1 {
@@ -478,13 +529,93 @@ tr[data-missing='true'] td:first-child {
 
 /* --- search (CLAUDE.md §12) ------------------------------------------------ */
 
+/* The search tab drops main's default top padding — the hero layout below
+   manages its own vertical rhythm, generous when empty, compact once results
+   take over, rather than fighting a fixed page inset. */
+.main-search {
+  padding-top: 1rem;
+}
+
+.search-page {
+  display: flex;
+  flex-direction: column;
+  transition: padding-top 160ms ease-out;
+}
+
+/* Nothing above the box (per the restructure): before a first search, the
+   whole page is just the input, the smallprint and the value proposition,
+   pushed down toward the middle of the screen rather than pinned to the top. */
+.search-page-empty {
+  padding-top: 14vh;
+}
+
+.search-hero-form {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.search-input-hero {
+  font-size: 1.15rem;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+}
+
+.search-hero-form button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 1.1rem;
+  cursor: pointer;
+}
+
+.search-hero-form button:hover {
+  border-color: var(--muted);
+}
+
+.search-smallprint {
+  margin: 0.5rem 0.2rem 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.search-value-prop {
+  max-width: 32rem;
+  margin: 2.5rem auto 0;
+  padding: 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  text-align: center;
+}
+
+.search-filters-disclosure {
+  margin-top: 0.8rem;
+}
+
+.search-filters-disclosure summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  user-select: none;
+}
+
+.search-filters-disclosure summary:hover {
+  color: var(--fg);
+}
+
+.search-meta-line {
+  margin-top: 1.4rem;
+}
+
 .search-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: 0.8rem 1rem;
-  margin: 0.9rem 0 0;
-  padding-top: 0.9rem;
+  margin: 0.7rem 0 0;
+  padding-top: 0.7rem;
   border-top: 1px solid var(--line);
 }
 
@@ -617,4 +748,40 @@ tr[data-missing='true'] td:first-child {
   display: flex;
   align-items: center;
   gap: 0.7rem;
+}
+
+/* --- diagnostics (Settings, collapsed) -------------------------------- */
+
+.diagnostics {
+  margin-top: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.9rem 1.1rem;
+  background: var(--panel);
+}
+
+.diagnostics summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  user-select: none;
+}
+
+.diagnostics summary:hover {
+  color: var(--fg);
+}
+
+.diagnostics-body {
+  margin-top: 1rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+/* Diagnostics panels sit inside a shaded wrapper already, so they read as
+   nested content rather than the page's own background. */
+.diagnostics-body .panel {
+  background: var(--bg);
 }

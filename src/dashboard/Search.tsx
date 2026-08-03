@@ -212,92 +212,93 @@ export function Search(): React.JSX.Element {
     }
   }, []);
 
-  const hasActiveFilters = Object.values(filters).some((value) => value !== '');
+  const activeFilterCount = Object.values(filters).filter((value) => value !== '').length;
   const shown = moreLike?.result ?? searchResult;
+  const isEmpty = shown === null;
 
   return (
-    <section className="panel">
-      <h2>Search</h2>
-      <p className="detail settings-intro">
-        Ranks by similarity to your query — it always returns results, even when nothing matches well
-        (§15). A low score at the top of the list means "closest of what's here", not "found it".
-      </p>
-
-      <form onSubmit={onSubmit} className="actions" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>
+    <div className={`search-page${isEmpty ? ' search-page-empty' : ''}`}>
+      <form onSubmit={onSubmit} className="search-hero-form">
         <input
           type="search"
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="what were you reading about?"
           aria-label="Search your history"
-          className="search-input"
+          className="search-input search-input-hero"
+          autoFocus
         />
         <button type="submit" disabled={busy}>
           {busy ? 'Searching…' : 'Search'}
         </button>
       </form>
 
-      <div className="search-filters">
-        <label>
-          From
-          <input
-            type="datetime-local"
-            value={filters.startTime}
-            max={filters.endTime || undefined}
-            onChange={(event) => onFilterChange({ startTime: event.target.value })}
-          />
-        </label>
-        <label>
-          To
-          <input
-            type="datetime-local"
-            value={filters.endTime}
-            min={filters.startTime || undefined}
-            onChange={(event) => onFilterChange({ endTime: event.target.value })}
-          />
-        </label>
-        <label>
-          Format
-          <select value={filters.format} onChange={(event) => onFilterChange({ format: event.target.value as Format | '' })}>
-            <option value="">Any</option>
-            {FORMATS.map((format) => (
-              <option key={format} value={format}>
-                {format}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Topic
-          <select value={filters.topicClusterId} onChange={(event) => onFilterChange({ topicClusterId: event.target.value })}>
-            <option value="">Any</option>
-            {topics.map((topic) => (
-              <option key={topic.id} value={topic.id}>
-                {topic.label} ({topic.size})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Domain
-          <input
-            list="search-domain-suggestions"
-            value={filters.domain}
-            onChange={(event) => onFilterChange({ domain: event.target.value })}
-            placeholder="e.g. github.com"
-          />
-          <datalist id="search-domain-suggestions">
-            {domains.map((domain) => (
-              <option key={domain} value={domain} />
-            ))}
-          </datalist>
-        </label>
-        {hasActiveFilters && (
-          <button type="button" className="linkish search-clear-filters" onClick={clearFilters}>
-            Clear filters
-          </button>
-        )}
-      </div>
+      <p className="search-smallprint">Ranked by similarity — always returns results, even weak ones.</p>
+
+      <details className="search-filters-disclosure">
+        <summary>Filters{activeFilterCount > 0 ? ` · ${activeFilterCount} active` : ''}</summary>
+        <div className="search-filters">
+          <label>
+            From
+            <input
+              type="datetime-local"
+              value={filters.startTime}
+              max={filters.endTime || undefined}
+              onChange={(event) => onFilterChange({ startTime: event.target.value })}
+            />
+          </label>
+          <label>
+            To
+            <input
+              type="datetime-local"
+              value={filters.endTime}
+              min={filters.startTime || undefined}
+              onChange={(event) => onFilterChange({ endTime: event.target.value })}
+            />
+          </label>
+          <label>
+            Format
+            <select value={filters.format} onChange={(event) => onFilterChange({ format: event.target.value as Format | '' })}>
+              <option value="">Any</option>
+              {FORMATS.map((format) => (
+                <option key={format} value={format}>
+                  {format}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Topic
+            <select value={filters.topicClusterId} onChange={(event) => onFilterChange({ topicClusterId: event.target.value })}>
+              <option value="">Any</option>
+              {topics.map((topic) => (
+                <option key={topic.id} value={topic.id}>
+                  {topic.label} ({topic.size})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Domain
+            <input
+              list="search-domain-suggestions"
+              value={filters.domain}
+              onChange={(event) => onFilterChange({ domain: event.target.value })}
+              placeholder="e.g. github.com"
+            />
+            <datalist id="search-domain-suggestions">
+              {domains.map((domain) => (
+                <option key={domain} value={domain} />
+              ))}
+            </datalist>
+          </label>
+          {activeFilterCount > 0 && (
+            <button type="button" className="linkish search-clear-filters" onClick={clearFilters}>
+              Clear filters
+            </button>
+          )}
+        </div>
+      </details>
 
       {error !== null && <p className="error-note">{error}</p>}
 
@@ -311,18 +312,30 @@ export function Search(): React.JSX.Element {
         </p>
       )}
 
+      {/* The distinction from Chrome's own history search is the product, and
+          nothing else on screen says it — shown once, before the first
+          search, rather than as permanent chrome once results take over. */}
+      {isEmpty && error === null && (
+        <p className="search-value-prop">
+          Unlike Chrome's built-in history search, which matches text in a page's title or URL, this
+          searches what the page was actually about. Try something like <em>"that article about staying
+          calm during interviews"</em> — it can surface a page titled "5 Tips Before Your Technical
+          Round" even though none of those words appear in the title.
+        </p>
+      )}
+
       {shown !== null && (
         <>
-          <p className="detail" style={{ marginTop: '0.9rem' }}>
+          <p className="detail search-meta-line">
             {shown.hits.length} of {shown.scanned.toLocaleString()} unique nodes · scan {shown.timings.scanMs} ms
             {shown.timings.embedMs > 0 ? ` · query embed ${shown.timings.embedMs} ms` : ''}
             {shown.timings.loadMs > 0 ? ` · index load ${shown.timings.loadMs} ms` : ''}
           </p>
 
-          {shown.hits.length === 0 && hasActiveFilters && (
+          {shown.hits.length === 0 && activeFilterCount > 0 && (
             <p className="detail">No pages match these filters. Try widening the time range or clearing one.</p>
           )}
-          {shown.hits.length === 0 && !hasActiveFilters && shown.scanned === 0 && (
+          {shown.hits.length === 0 && activeFilterCount === 0 && shown.scanned === 0 && (
             <p className="detail">Nothing indexed yet — run a backfill first.</p>
           )}
 
@@ -333,7 +346,7 @@ export function Search(): React.JSX.Element {
           </ol>
         </>
       )}
-    </section>
+    </div>
   );
 }
 

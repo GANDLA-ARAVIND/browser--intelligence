@@ -47,12 +47,16 @@ const NODE_BASELINE_MS: Partial<Record<string, number>> = {
   collapse: 20_090,
 };
 
+/**
+ * The action: start a backfill, watch it run. The detailed technical readout
+ * (per-stage timings, main-thread stalls, the clustering unit breakdown) is a
+ * separate component, `BackfillDiagnostics` — most people who want to run a
+ * backfill do not want to read an ONNX-vs-Node timing table to do it.
+ */
 export function Backfill(): React.JSX.Element {
   const [progress, setProgress] = useState<BackfillProgress>(idleProgress());
   const [starting, setStarting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const [summary, setSummary] = useState<BackfillSummary | null>(null);
-  const [clustering, setClustering] = useState<ClusteringSummary | null>(null);
   const timer = useRef<number | null>(null);
 
   const poll = useCallback(async () => {
@@ -62,36 +66,13 @@ export function Backfill(): React.JSX.Element {
     if (reply !== null) setProgress(reply.progress);
   }, []);
 
-  // §3: all four contexts share one origin and therefore one IndexedDB, so the
-  // dashboard reads the summary directly rather than routing it through a
-  // message. It also survives the offscreen document being torn down.
-  const loadSummary = useCallback(async () => {
-    try {
-      const db = await openDatabase();
-      setSummary(await getMeta<BackfillSummary>(db, 'backfill'));
-      // Read separately: clustering owns its own summary precisely because it
-      // can fail without failing the backfill, so its outcome is not in the
-      // backfill record.
-      setClustering(await getMeta<ClusteringSummary>(db, 'clustering'));
-    } catch {
-      setSummary(null); // no database yet — nothing has run
-      setClustering(null);
-    }
-  }, []);
-
   useEffect(() => {
     void poll();
-    void loadSummary();
     timer.current = window.setInterval(() => void poll(), POLL_MS);
     return () => {
       if (timer.current !== null) window.clearInterval(timer.current);
     };
-  }, [poll, loadSummary]);
-
-  // Re-read once the run finishes; the summary is only written at the end.
-  useEffect(() => {
-    if (progress.stage === 'done') void loadSummary();
-  }, [progress.stage, loadSummary]);
+  }, [poll]);
 
   const start = useCallback(async () => {
     setStarting(true);
@@ -154,10 +135,39 @@ export function Backfill(): React.JSX.Element {
 
       {progress.error !== null && <p className="error-note">{progress.error}</p>}
       {note !== null && <p className="error-note">{note}</p>}
-
-      {summary !== null && <Timings summary={summary} clustering={clustering} />}
     </section>
   );
+}
+
+/**
+ * The detailed readout: per-stage timings against the Phase 0 Node baseline,
+ * main-thread stalls, and the clustering unit breakdown. Lives in Diagnostics,
+ * not on the main Settings path — loads its own copy of the last run's
+ * summary independently of `Backfill`'s live-progress state, since the two
+ * are not necessarily mounted, or open, at the same time.
+ */
+export function BackfillDiagnostics(): React.JSX.Element {
+  const [summary, setSummary] = useState<BackfillSummary | null>(null);
+  const [clustering, setClustering] = useState<ClusteringSummary | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const db = await openDatabase();
+        setSummary(await getMeta<BackfillSummary>(db, 'backfill'));
+        // Read separately: clustering owns its own summary precisely because
+        // it can fail without failing the backfill, so its outcome is not in
+        // the backfill record.
+        setClustering(await getMeta<ClusteringSummary>(db, 'clustering'));
+      } catch {
+        setSummary(null);
+        setClustering(null);
+      }
+    })();
+  }, []);
+
+  if (summary === null) return <p className="detail">No backfill has run yet.</p>;
+  return <Timings summary={summary} clustering={clustering} />;
 }
 
 function formatMs(ms: number): string {

@@ -661,13 +661,27 @@ before promoting any topic.
 ### Phase 4 — Dashboard (week 4)
 React UI. v1 surfaces only — see §12.
 
-**Step 1 (search UI) is complete.** Query box with time/format/topic/domain
-filters, result cards (favicon, 2-line preview, topic from the page's cluster,
+**Step 1 (search UI) is complete**, and now includes the navigation
+restructure that had to precede the rest of Phase 4. Query box with
+time/format/topic/domain filters (collapsed behind a disclosure until opened),
+result cards (favicon, 2-line preview, topic from the page's cluster,
 "revisited N×"), and "more like this" as a second, filter-free vector-neighbour
 endpoint. Both the ranking scan and the neighbour lookup run in the offscreen
 document (§3, §14) — a dashboard-side filter dropdown reads corpus metadata
 directly from IndexedDB the same way other panels do, which is rendering
 support, not the compute the isolation rule keeps out of this context.
+
+**Four surfaces behind top-level navigation** — Search (default), Topics,
+Today, Settings — replacing a single scrolling page that put wiring probes,
+stage timings, a stall table and a filter-drop audit ahead of the primary
+surface §1 names. Topics and Today are placeholders until steps 2 and 3.
+Settings holds backfill, blocked categories, retroactive removal, export and
+delete-range — the controls someone actually reaches for — plus a collapsed
+**Diagnostics** section (`Diagnostics.tsx`) holding everything that moved out
+of the primary path: skeleton wiring, per-stage timings, main-thread stalls,
+the capture-quality inspector, and the drop audit. **Nothing was deleted**,
+only relocated — every panel this project has built up through Phase 3 is
+still reachable, one click away instead of first.
 
 **Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
 these are quality gaps found on real queries. Status as of step 1's full
