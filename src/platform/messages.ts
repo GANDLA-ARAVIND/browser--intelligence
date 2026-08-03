@@ -14,9 +14,28 @@
 import type { BackfillProgress } from '../lib/backfill.js';
 import type { SensitiveCategory } from '../lib/blocklist.js';
 import type { CapturedPage } from '../lib/capture.js';
+import type { Format } from '../lib/format.js';
 import type { RawVisit } from '../lib/types.js';
 
 export type Context = 'background' | 'offscreen' | 'dashboard' | 'content';
+
+/**
+ * §12: time range, format, topic, domain. All optional and independent — an
+ * absent field means "no constraint on this axis", never a default value that
+ * could silently narrow a query the user did not ask to narrow.
+ *
+ * `topicClusterId`, never a topic *label*: labels are for display, and a
+ * label is not guaranteed unique or stable in the way an id is (§5, §6 — only
+ * a derived cluster is a real topic, seed labels are never one).
+ */
+export interface SearchFilters {
+  startTime?: number;
+  endTime?: number;
+  format?: Format;
+  topicClusterId?: string;
+  /** Case-insensitive substring match, not exact — "google" should find every Google property. */
+  domain?: string;
+}
 
 export type Message =
   | { target: 'background'; type: 'GET_STATUS' }
@@ -32,8 +51,13 @@ export type Message =
   | { target: 'offscreen'; type: 'GET_BACKFILL_PROGRESS' }
   // Search. Runs in the offscreen document, never the dashboard: §14 records
   // that context isolation is what kept the UI alive while a thread blocked.
-  | { target: 'background'; type: 'SEARCH'; query: string; limit: number }
-  | { target: 'offscreen'; type: 'SEARCH'; query: string; limit: number }
+  | { target: 'background'; type: 'SEARCH'; query: string; limit: number; filters?: SearchFilters }
+  | { target: 'offscreen'; type: 'SEARCH'; query: string; limit: number; filters?: SearchFilters }
+  // §12's "more like this" — a vector-neighbour lookup seeded from a page
+  // already in the index, not a new embedding. Same isolation rule: the scan
+  // is short but still synchronous, so it stays in the offscreen document.
+  | { target: 'background'; type: 'MORE_LIKE_THIS'; id: string; limit: number }
+  | { target: 'offscreen'; type: 'MORE_LIKE_THIS'; id: string; limit: number }
   // Live capture. The content script never embeds — it extracts and hands off.
   | { target: 'background'; type: 'CAPTURE_PAGE'; page: CapturedPage }
   | { target: 'offscreen'; type: 'DRAIN_QUEUE' }
@@ -78,12 +102,22 @@ export interface AcceptedResponse {
 
 export interface SearchHit {
   id: string;
+  url: string;
   title: string;
+  /** First ~160 chars of the page's own text (or title, if extraction gave nothing) for the card preview. */
+  textPreview: string;
+  /** False on a page with no captured text (most backfilled pages) — `textPreview` is then just the title, truncated, and must not be shown as if it were a preview of something else. */
+  hasCapturedText: boolean;
   domain: string;
+  format: Format;
+  /** Derived-cluster name, or `null` — never a seed label, and never invented (§5, §6, §14). */
+  topicLabel: string | null;
   score: number;
   lastVisit: number;
   /** How many near-identical pages this node stands for. */
   collapsed: number;
+  /** The representative's own return-visit count — surfaced as "revisited N×" when > 1. */
+  visitCount: number;
 }
 
 export interface SearchResponse {
@@ -133,6 +167,7 @@ export interface ReplyMap {
   DRAIN_QUEUE: DrainResponse;
   INVALIDATE_SEARCH: AcceptedResponse;
   REBUILD_SESSIONS: AcceptedResponse;
+  MORE_LIKE_THIS: SearchResponse;
 }
 
 export type ReplyFor<M extends Message> = ReplyMap[M['type']];
@@ -186,4 +221,5 @@ export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean
   DRAIN_QUEUE: isDrainResponse,
   INVALIDATE_SEARCH: isAcceptedResponse,
   REBUILD_SESSIONS: isAcceptedResponse,
+  MORE_LIKE_THIS: isSearchResponse,
 };

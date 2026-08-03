@@ -262,7 +262,20 @@ function handle(message: Message, context: MessageContext): Promise<Response> | 
     // ~30s idle and cannot hold either (§14).
     case 'SEARCH':
       return ensureOffscreenDocument()
-        .then(() => sendMessage({ target: 'offscreen', type: 'SEARCH', query: message.query, limit: message.limit }))
+        .then(() =>
+          sendMessage({
+            target: 'offscreen',
+            type: 'SEARCH',
+            query: message.query,
+            limit: message.limit,
+            ...(message.filters === undefined ? {} : { filters: message.filters }),
+          })
+        )
+        .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
+
+    case 'MORE_LIKE_THIS':
+      return ensureOffscreenDocument()
+        .then(() => sendMessage({ target: 'offscreen', type: 'MORE_LIKE_THIS', id: message.id, limit: message.limit }))
         .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
 
     case 'GET_BACKFILL_PROGRESS':

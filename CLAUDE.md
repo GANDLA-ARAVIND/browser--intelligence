@@ -661,24 +661,44 @@ before promoting any topic.
 ### Phase 4 — Dashboard (week 4)
 React UI. v1 surfaces only — see §12.
 
-**Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
-these are quality gaps found on real queries, all deferred deliberately:
+**Step 1 (search UI) is complete.** Query box with time/format/topic/domain
+filters, result cards (favicon, 2-line preview, topic from the page's cluster,
+"revisited N×"), and "more like this" as a second, filter-free vector-neighbour
+endpoint. Both the ranking scan and the neighbour lookup run in the offscreen
+document (§3, §14) — a dashboard-side filter dropdown reads corpus metadata
+directly from IndexedDB the same way other panels do, which is rendering
+support, not the compute the isolation rule keeps out of this context.
 
-1. **Empty state.** Cosine always returns `k` results, so the UI cannot tell
-   "no matches" from "your matches". Must be **relative, not an absolute
-   cutoff** — measured top scores ranged 0.376 to 0.892 across five queries, so
-   any fixed floor is the transferability bug of §14 again. The signal is
-   distribution *shape*: a high top score with a steep drop-off means a real
-   hit, a flat profile means nothing matched. Same rank-and-margin principle
-   that replaced the absolute clustering threshold.
-2. **Result-level duplicate saturation.** Fix with domain/prefix diversity in
-   ranking — **not** a lower collapse threshold, which would over-merge
-   genuinely distinct pages. This is the Phase 0 neighbourhood-saturation
-   problem recurring one layer up: there it starved the kNN graph, here it
-   starves the result list.
-3. **Compositional queries.** Expected to improve in Phase 2 when page content
-   replaces titles as the embedded text, so revisit *after* Phase 2 rather than
-   engineering around it now.
+**Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
+these are quality gaps found on real queries. Status as of step 1's full
+search UI:
+
+1. **Empty state — still open, deliberately.** Cosine always returns `k`
+   results, so the UI cannot tell "no matches" from "your matches". Must be
+   **relative, not an absolute cutoff** — measured top scores ranged 0.376 to
+   0.892 across five queries, so any fixed floor is the transferability bug of
+   §14 again. The signal is distribution *shape*: a high top score with a
+   steep drop-off means a real hit, a flat profile means nothing matched. Same
+   rank-and-margin principle that replaced the absolute clustering threshold.
+   Not solved honestly this step, so it was left rather than papered over with
+   an invented confidence label — the UI states plainly that it ranks, not
+   matches (§15), and stops there. The one narrower case that *is* honest to
+   report — zero results because an active **filter** excluded everything —
+   is distinguished from this and shown, since that is a fact about set
+   membership, not a fabricated relevance judgement.
+2. **Result-level duplicate saturation — resolved.** `applyDomainDiversity`
+   caps how many results one domain may contribute, re-ranking a wider
+   candidate pool rather than lowering the collapse threshold (which would
+   over-merge genuinely distinct pages). Same neighbourhood-saturation problem
+   as Phase 0's kNN graph, recurring one layer up in the result list. Verified
+   both directions (DECISIONS.md): the cap does cap, and it never returns
+   fewer than `min(limit, candidates available)` — a popular domain must not
+   silently shrink the result count.
+3. **Compositional queries — already resolved, this row was stale.** This
+   backlog entry still said "revisit after Phase 2 replaces titles with page
+   content." Phase 2 measured that directly and found the opposite: embedding
+   more text made compositional matching *worse* (§15, DECISIONS.md). Nothing
+   to revisit here; the limitation is architectural, not a queue item.
 
 ### Phase 5 — Ship (week 5)
 README with a demo GIF in the first screen, architecture diagram, design-

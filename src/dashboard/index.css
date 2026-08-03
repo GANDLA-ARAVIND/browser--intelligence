@@ -265,19 +265,6 @@ li[data-state="fail"] .dot {
   min-width: 12rem;
 }
 
-.hits {
-  margin: 0.75rem 0 0;
-  padding-left: 1.6rem;
-  display: grid;
-  gap: 0.55rem;
-}
-
-.hits li {
-  display: grid;
-  grid-template-columns: 3.4rem 1fr;
-  gap: 0.1rem 0.6rem;
-}
-
 .hit-score {
   grid-row: span 2;
   color: var(--muted);
@@ -487,4 +474,147 @@ tr[data-missing='true'] td:first-child {
 
 .remove-title {
   overflow-wrap: anywhere;
+}
+
+/* --- search (CLAUDE.md §12) ------------------------------------------------ */
+
+.search-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.8rem 1rem;
+  margin: 0.9rem 0 0;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+}
+
+.search-filters label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.search-filters input,
+.search-filters select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  min-width: 8rem;
+}
+
+.search-clear-filters {
+  align-self: center;
+  font-size: 0.8125rem;
+}
+
+.search-more-like-banner {
+  margin-top: 0.9rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.results {
+  list-style: none;
+  margin: 0.9rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.result-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.7rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.result-card:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.result-favicon {
+  margin-top: 0.2rem;
+  border-radius: 3px;
+  /* A page with no cached favicon renders the broken-image icon; hiding it is
+     less misleading than a placeholder that implies a specific site. */
+  flex-shrink: 0;
+}
+
+.result-favicon:not([src]),
+.result-favicon[src=''] {
+  visibility: hidden;
+}
+
+.result-body {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.result-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.result-title {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.result-title:hover {
+  text-decoration: underline;
+}
+
+.result-badge {
+  font-size: 0.75rem;
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+.result-preview {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  /* Exactly two lines, per §12 — the truncation is cosmetic, not the same cap
+     as `textPreview`'s own ~160-char server-side limit. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.result-topic {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.5rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.result-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
 }

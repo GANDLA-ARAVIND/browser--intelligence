@@ -14,7 +14,7 @@ import { idleProgress, runBackfill, type BackfillProgress } from '../lib/backfil
 import { buildSessions } from '../lib/sessions.js';
 import { getAllPages, openDatabase, replaceSessions, toSessionPages } from '../lib/storage.js';
 import { drainQueue } from './drain.js';
-import { invalidateSearchIndex, search } from './searchIndex.js';
+import { invalidateSearchIndex, moreLikeThis, search } from './searchIndex.js';
 import { onMessage, resourceUrl } from '../platform/browser.js';
 import type { Message, Response } from '../platform/messages.js';
 
@@ -67,7 +67,13 @@ function handle(message: Message): Promise<Response> | Response | undefined {
         }));
 
     case 'SEARCH':
-      return search(message.query, message.limit).catch((error: unknown) => ({
+      return search(message.query, message.limit, message.filters).catch((error: unknown) => ({
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+
+    case 'MORE_LIKE_THIS':
+      return moreLikeThis(message.id, message.limit).catch((error: unknown) => ({
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
       }));

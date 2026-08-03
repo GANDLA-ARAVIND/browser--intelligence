@@ -9,6 +9,9 @@
 
 export type Format = 'video' | 'docs' | 'forum' | 'article' | 'code' | 'social' | 'shopping' | 'other';
 
+/** Single source of truth for "every possible format" — a format filter dropdown reads from this, not a duplicated literal list. */
+export const FORMATS: readonly Format[] = ['video', 'docs', 'forum', 'article', 'code', 'social', 'shopping', 'other'];
+
 const DOMAIN_RULES: Array<[RegExp, Format]> = [
   [/(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv|dailymotion\.com)$/i, 'video'],
   [/(^|\.)(github\.com|gitlab\.com|bitbucket\.org|codepen\.io|codesandbox\.io|replit\.com|leetcode\.com|neetcode\.io|hackerrank\.com|codeforces\.com)$/i, 'code'],

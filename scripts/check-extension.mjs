@@ -71,7 +71,7 @@ check(
   (manifest.host_permissions ?? []).join(', ') || 'none'
 );
 
-const REQUIRED_PERMISSIONS = ['history', 'storage', 'offscreen', 'alarms'];
+const REQUIRED_PERMISSIONS = ['history', 'storage', 'offscreen', 'alarms', 'favicon'];
 const permissions = manifest.permissions ?? [];
 for (const permission of REQUIRED_PERMISSIONS) {
   check(permissions.includes(permission), `permission: ${permission}`);
