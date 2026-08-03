@@ -86,6 +86,24 @@ export interface Slicer {
   yields(): number;
 }
 
+/**
+ * Thrown from inside a chunked loop when a cancellation was requested at a
+ * yield checkpoint. A cooperative cancel is only checkable *between*
+ * iterations — JS is single-threaded, so nothing can set the flag mid-batch —
+ * which is exactly where `yieldNow()` already returns control to the caller.
+ * `runBackfill` catches this specifically and treats it as neither success
+ * nor failure: a genuinely cancelled run, distinct from an error, because a
+ * "cancel" button that only hides the screen while the work keeps running
+ * underneath would not actually do what it claims (CLAUDE.md §14's honesty
+ * standard applied to a UI control, not a report).
+ */
+export class BackfillCancelledError extends Error {
+  constructor() {
+    super('backfill cancelled');
+    this.name = 'BackfillCancelledError';
+  }
+}
+
 export function createSlicer(budgetMs: number = DEFAULT_SLICE_MS): Slicer {
   let sliceStart = performance.now();
   let count = 0;

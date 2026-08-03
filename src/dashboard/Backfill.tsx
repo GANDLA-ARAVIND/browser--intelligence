@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { idleProgress, TIMED_STAGES, type BackfillProgress, type BackfillStage } from '../lib/backfill.js';
+import { useCallback, useEffect, useState } from 'react';
+import { TIMED_STAGES, type BackfillStage } from '../lib/backfill.js';
 import { summariseBlocking } from '../lib/blocking.js';
 import { getMeta, openDatabase, type BackfillSummary, type ClusteringSummary } from '../lib/storage.js';
 import { sendMessage } from '../platform/browser.js';
+import { useBackfillProgress } from './useBackfillProgress.js';
 
 /** §10: this screen is what the user sees 60 seconds after install. */
 const STAGE_LABEL: Record<BackfillStage, string> = {
@@ -15,6 +16,7 @@ const STAGE_LABEL: Record<BackfillStage, string> = {
   writing: 'Writing to local storage',
   clustering: 'Finding topics',
   done: 'Complete',
+  cancelled: 'Cancelled',
   error: 'Failed',
 };
 
@@ -27,8 +29,6 @@ const ACTIVE: BackfillStage[] = [
   'writing',
   'clustering',
 ];
-
-const POLL_MS = 400;
 
 /** Stage order for display; `finish` writes whichever ones ran. */
 /**
@@ -54,25 +54,9 @@ const NODE_BASELINE_MS: Partial<Record<string, number>> = {
  * backfill do not want to read an ONNX-vs-Node timing table to do it.
  */
 export function Backfill(): React.JSX.Element {
-  const [progress, setProgress] = useState<BackfillProgress>(idleProgress());
+  const progress = useBackfillProgress();
   const [starting, setStarting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const timer = useRef<number | null>(null);
-
-  const poll = useCallback(async () => {
-    const reply = await sendMessage({ target: 'background', type: 'GET_BACKFILL_PROGRESS' });
-    // Null is ordinary here — the worker may be mid-restart. Keep the last
-    // known progress rather than flashing the UI back to idle.
-    if (reply !== null) setProgress(reply.progress);
-  }, []);
-
-  useEffect(() => {
-    void poll();
-    timer.current = window.setInterval(() => void poll(), POLL_MS);
-    return () => {
-      if (timer.current !== null) window.clearInterval(timer.current);
-    };
-  }, [poll]);
 
   const start = useCallback(async () => {
     setStarting(true);
@@ -81,8 +65,7 @@ export function Backfill(): React.JSX.Element {
     setStarting(false);
     if (reply === null) setNote('The service worker did not respond. Reload the extension and try again.');
     else if (!reply.accepted) setNote(reply.reason ?? 'Backfill was not accepted.');
-    void poll();
-  }, [poll]);
+  }, []);
 
   const isActive = ACTIVE.includes(progress.stage);
   const percent = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;

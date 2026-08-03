@@ -11,6 +11,7 @@
 
 import { DEFAULT_BLOCKED_CATEGORIES, type SensitiveCategory } from './blocklist.js';
 import { startBlockingMonitor, type BlockingEvent } from './blocking.js';
+import { BackfillCancelledError } from './chunk.js';
 import { clusterByMutualKnnChunked } from './clustering.js';
 import { labelClusters } from './labels.js';
 import { collapseNearDuplicatesChunked, DEFAULT_DUPLICATE_THRESHOLD, expandGroups } from './dedupe.js';
@@ -44,6 +45,7 @@ export type BackfillStage =
   | 'writing'
   | 'clustering'
   | 'done'
+  | 'cancelled'
   | 'error';
 
 /**
@@ -119,6 +121,14 @@ export interface BackfillOptions {
   embedder?: Pick<EmbedderOptions, 'wasmPaths' | 'numThreads' | 'localModelPath'>;
   /** §9 categories to exclude. Defaults to all of them. */
   blockedCategories?: readonly SensitiveCategory[];
+  /**
+   * Polled at existing yield checkpoints (embed batches, and threaded through
+   * into the chunked collapse/cluster passes). A cooperative check, not a
+   * signal — cancellation only ever takes effect between iterations, never
+   * mid-batch, because JS is single-threaded and nothing else can run to flip
+   * the flag until then.
+   */
+  shouldCancel?: () => boolean;
 }
 
 /** §4: history gives a title and nothing else — no body text to extract. */
@@ -126,8 +136,9 @@ const TITLE_ONLY_TIER = 3;
 /** §8 tier 4: no title at all, topic derived from the URL path. */
 const PATH_DERIVED_TIER = 4;
 
-export async function runBackfill(options: BackfillOptions): Promise<BackfillSummary> {
-  const { visits, onProgress } = options;
+/** `null` means the run was cancelled — never a fabricated completed-looking summary. */
+export async function runBackfill(options: BackfillOptions): Promise<BackfillSummary | null> {
+  const { visits, onProgress, shouldCancel } = options;
   const startedAt = Date.now();
   const stageMs: Partial<Record<TimedStage, number>> = {};
   const progress = idleProgress();
@@ -216,6 +227,10 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
 
     await time('embed', async () => {
       for (let offset = 0; offset < pages.length; offset += EMBEDDING_BATCH_SIZE) {
+        // Checked once per batch, not per page: `embed()` already awaits the
+        // model, so this is a real yield point, unlike the collapse/cluster
+        // loops where the check has to ride on an explicit slicer.
+        if (shouldCancel?.()) throw new BackfillCancelledError();
         const slice = pages.slice(offset, offset + EMBEDDING_BATCH_SIZE);
         const vectors = await embedder.embed(slice.map((page) => page.embedText));
         matrix.set(vectors, offset * EMBEDDING_DIM);
@@ -241,7 +256,13 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
     // separate triggered job that would reload every vector and re-run this
     // 12-second pass to rebuild it.
     const { groups, repMatrix } = await time('collapse', () =>
-      collapseNearDuplicatesChunked(matrix, pages, options.dupThreshold ?? DEFAULT_DUPLICATE_THRESHOLD)
+      collapseNearDuplicatesChunked(
+        matrix,
+        pages,
+        options.dupThreshold ?? DEFAULT_DUPLICATE_THRESHOLD,
+        undefined,
+        shouldCancel
+      )
     );
 
     progress.counts.uniqueNodes = groups.length;
@@ -280,12 +301,18 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
       // `stageMs['cluster']` does not exist until then — reading it inside the
       // callback stored a duration of 0 on every successful run.
       const outcome = await time('cluster', async () => {
-        const { clusters, noise } = await clusterByMutualKnnChunked(repMatrix, groups.length, {
-          k: CLUSTER_KNN,
-          sharedMin: CLUSTER_SHARED,
-          minSim: CLUSTER_MIN_SIM,
-          minClusterSize: CLUSTER_MIN_SIZE,
-        });
+        const { clusters, noise } = await clusterByMutualKnnChunked(
+          repMatrix,
+          groups.length,
+          {
+            k: CLUSTER_KNN,
+            sharedMin: CLUSTER_SHARED,
+            minSim: CLUSTER_MIN_SIM,
+            minClusterSize: CLUSTER_MIN_SIZE,
+          },
+          undefined,
+          shouldCancel
+        );
 
         // Membership first, then labels, then records — `labelClusters` scores
         // a term by how rare it is *across* clusters, so it needs all of them
@@ -368,6 +395,10 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
           `${outcome.noisePages}/${pages.length} pages noise`,
       });
     } catch (error) {
+      // A cancellation is not a clustering failure — it must propagate to the
+      // outer catch, which treats it as a genuinely stopped run rather than
+      // "clustering failed but the rest of the corpus is fine".
+      if (error instanceof BackfillCancelledError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.error('[backfill] clustering failed; the corpus is still stored and searchable', error);
       // Zeros here are honest: nothing clustered. `nodes.total` still reports
@@ -403,6 +434,13 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
     return summary;
   } catch (error) {
     void monitor.stop();
+    if (error instanceof BackfillCancelledError) {
+      // No BackfillSummary/ClusteringSummary written: a cancelled run is not
+      // a completed one, and a fabricated summary would claim otherwise (§14
+      // — a report/control must not claim a state that isn't true).
+      emit({ stage: 'cancelled', finishedAt: Date.now(), detail: 'cancelled by user' });
+      return null;
+    }
     const message = error instanceof Error ? error.message : String(error);
     emit({ stage: 'error', error: message, finishedAt: Date.now(), detail: message });
     throw error;

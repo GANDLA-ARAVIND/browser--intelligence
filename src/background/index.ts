@@ -18,6 +18,7 @@ import {
   onInstalled,
   onMessage,
   onStartup,
+  openDashboard,
   sendMessage,
   type MessageContext,
 } from '../platform/browser.js';
@@ -30,6 +31,7 @@ import {
   openDatabase,
   putMeta,
   type CaptureHealth,
+  type OnboardingState,
 } from '../lib/storage.js';
 import { loadPauseState } from '../platform/pause.js';
 import { normalizeUrl, isLocalHost } from '../lib/url.js';
@@ -66,6 +68,16 @@ async function probeOffscreen(): Promise<StatusResponse['offscreen']> {
 }
 
 /**
+ * Set by `CANCEL_BACKFILL` and checked once, right after the history read
+ * completes. The history walk itself has no yield points worth cancelling
+ * mid-window (it is 13 sequential `chrome.history.search()` calls, seconds
+ * total), so this only needs to stop a cancelled run from ever reaching
+ * offscreen — the offscreen document's own flag (`shouldCancel` in
+ * `runBackfill`) covers everything after that handoff.
+ */
+let backfillCancelRequested = false;
+
+/**
  * Reads history and hands it to the offscreen document.
  *
  * The worker does the reading because offscreen documents are restricted to
@@ -77,15 +89,20 @@ async function startBackfill(): Promise<AcceptedResponse> {
 
   const running = await sendMessage({ target: 'offscreen', type: 'GET_BACKFILL_PROGRESS' });
   const stage = running?.ok === true && 'progress' in running ? running.progress.stage : 'idle';
-  if (stage !== 'idle' && stage !== 'done' && stage !== 'error') {
+  if (stage !== 'idle' && stage !== 'done' && stage !== 'error' && stage !== 'cancelled') {
     return { ok: true, accepted: false, reason: `already running (${stage})` };
   }
+  backfillCancelRequested = false;
 
   console.log('[background] reading history in 7-day windows…');
   const visits = await readHistoryWindows((progress) => {
     console.log(`[background] window ${progress.window}/${progress.totalWindows} — ${progress.rowsSoFar} rows`);
   });
   console.log(`[background] ${visits.length} raw rows; handing off to offscreen`);
+
+  if (backfillCancelRequested) {
+    return { ok: true, accepted: false, reason: 'cancelled before reaching the offscreen document' };
+  }
 
   // The offscreen document acknowledges immediately and runs detached. Awaiting
   // completion here would hold a port open across a service-worker sleep, and
@@ -257,6 +274,15 @@ function handle(message: Message, context: MessageContext): Promise<Response> | 
         error: error instanceof Error ? error.message : String(error),
       }));
 
+    // Two-phase: stops a run still inside the history-read window here, and
+    // forwards to offscreen for everything after the handoff — the only
+    // place `runBackfill`'s own `shouldCancel` is actually polled.
+    case 'CANCEL_BACKFILL':
+      backfillCancelRequested = true;
+      return ensureOffscreenDocument()
+        .then(() => sendMessage({ target: 'offscreen', type: 'CANCEL_BACKFILL' }))
+        .then((reply) => reply ?? { ok: true as const, accepted: false, reason: 'offscreen document unreachable' });
+
     // Pure proxies. The offscreen document owns both the progress state and the
     // search index; the worker only routes (§3), because it is torn down after
     // ~30s idle and cannot hold either (§14).
@@ -309,14 +335,44 @@ async function wake(reason: string): Promise<void> {
   }
 }
 
-onInstalled(() => {
-  console.log('[background] onInstalled');
+/**
+ * §10: "design the screen for 60 seconds after install" — a fresh install
+ * with no automatic backfill shows an empty product until someone finds the
+ * button in Settings. `details.reason === 'install'` is the one signal that
+ * distinguishes a genuine first install from an update or a developer
+ * reload, both of which also fire `onInstalled` and must not re-trigger this.
+ *
+ * Writes the `OnboardingState` marker before starting the backfill, not
+ * after: the dashboard's first-run detection reads for this record's
+ * presence *and* the absence of a `BackfillSummary`, so the marker has to
+ * exist before the first progress poll can land, or there is a window where
+ * neither first-run nor the normal dashboard is the right thing to show.
+ */
+async function triggerFirstRun(): Promise<void> {
+  try {
+    const db = await openDatabase();
+    await putMeta(db, { key: 'onboarding', autoBackfillStartedAt: Date.now() } satisfies OnboardingState);
+  } catch (error) {
+    console.error('[background] could not write onboarding marker', error);
+  }
+  await openDashboard();
+  const result = await startBackfill().catch((error: unknown) => ({
+    ok: true as const,
+    accepted: false,
+    reason: error instanceof Error ? error.message : String(error),
+  }));
+  console.log('[background] first-run backfill:', result.accepted ? 'started' : `not started (${result.reason ?? 'unknown'})`);
+}
+
+onInstalled((reason) => {
+  console.log('[background] onInstalled', reason);
   // Fires on install, update *and* developer reload — which is exactly the
   // event that orphans content scripts in every already-open tab. Stamping it
   // lets the dashboard distinguish "capture is broken" from "your tabs are
   // stale", which are the same symptom and different fixes.
   void recordHealth({ extensionReloadedAt: Date.now() });
   void wake('onInstalled');
+  if (reason === 'install') void triggerFirstRun();
 });
 
 onStartup(() => {

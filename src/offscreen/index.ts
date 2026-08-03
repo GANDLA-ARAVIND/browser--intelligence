@@ -39,6 +39,8 @@ async function rebuildSessions(): Promise<number> {
 
 let progress: BackfillProgress = idleProgress();
 let running = false;
+/** Polled by `runBackfill`'s `shouldCancel`; reset at the start of every run. */
+let cancelRequested = false;
 
 function setStatusLine(): void {
   const status = document.querySelector('#status');
@@ -96,6 +98,7 @@ function handle(message: Message): Promise<Response> | Response | undefined {
     case 'RUN_BACKFILL': {
       if (running) return { ok: true, accepted: false, reason: 'a backfill is already running' };
       running = true;
+      cancelRequested = false;
 
       // Acknowledge now, work later. The caller is a service worker that may be
       // torn down long before this finishes, so the reply cannot wait on it.
@@ -106,6 +109,7 @@ function handle(message: Message): Promise<Response> | Response | undefined {
           setStatusLine();
         },
         blockedCategories: message.blockedCategories,
+        shouldCancel: () => cancelRequested,
         embedder: {
           // MV3 forbids remote code, so ORT's runtime is served from the
           // package; a single thread avoids SharedArrayBuffer and blob workers,
@@ -118,6 +122,13 @@ function handle(message: Message): Promise<Response> | Response | undefined {
         },
       })
         .then((summary) => {
+          // `null` is a genuine cancellation, not an error — nothing to index,
+          // since no summary was written and the corpus embedded so far is
+          // already searchable regardless (§14: no fabricated completed state).
+          if (summary === null) {
+            console.log('[offscreen] backfill cancelled');
+            return;
+          }
           console.log('[offscreen] backfill complete', summary);
           // The index is a snapshot; new pages mean it is stale.
           invalidateSearchIndex();
@@ -131,6 +142,10 @@ function handle(message: Message): Promise<Response> | Response | undefined {
 
       return { ok: true, accepted: true };
     }
+
+    case 'CANCEL_BACKFILL':
+      cancelRequested = true;
+      return { ok: true, accepted: running };
 
     default:
       return undefined;

@@ -750,6 +750,40 @@ tr[data-missing='true'] td:first-child {
   gap: 0.7rem;
 }
 
+/* --- first run (§10) --------------------------------------------------- */
+
+/* Full-screen takeover, not a panel inside the normal nav+main layout: this
+   is the very first thing a fresh install shows, before Search or any tab
+   exists to navigate to. */
+.first-run {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1.25rem;
+}
+
+.first-run-card {
+  width: 100%;
+  max-width: 34rem;
+}
+
+.first-run-card h1 {
+  margin-bottom: 0.6rem;
+}
+
+.first-run-copy {
+  margin: 0 0 1.75rem;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.first-run-stage {
+  font-weight: 600;
+  color: var(--fg);
+}
+
 /* --- diagnostics (Settings, collapsed) -------------------------------- */
 
 .diagnostics {

@@ -197,6 +197,18 @@ export interface CaptureHealth {
 }
 
 /**
+ * Written once, on a genuine fresh install (§10, §14 — `onInstalled`'s
+ * `reason` distinguishes this from an update or a developer reload). Its
+ * presence, combined with the absence of a `BackfillSummary`, is what tells
+ * the dashboard a first-run screen belongs on screen rather than the normal
+ * four-tab layout — not a separate boolean that could drift from reality.
+ */
+export interface OnboardingState {
+  key: 'onboarding';
+  autoBackfillStartedAt: number;
+}
+
+/**
  * FNV-1a, 64-bit, hex. Synchronous — `crypto.subtle.digest` is async and would
  * make every id derivation a promise for no benefit. This is a storage key, not
  * a security primitive: it needs to be stable and well-distributed, nothing more.

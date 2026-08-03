@@ -683,6 +683,31 @@ the capture-quality inspector, and the drop audit. **Nothing was deleted**,
 only relocated — every panel this project has built up through Phase 3 is
 still reachable, one click away instead of first.
 
+**First-run experience is complete.** Before this, backfill only ran when
+someone clicked the button in Settings, so a fresh install showed an empty
+product — directly against §10's "design the screen for 60 seconds after
+install." `chrome.runtime.onInstalled`'s `reason` field is the one signal
+that distinguishes a genuine first install from an update or a developer
+reload (both also fire `onInstalled`); on `reason === 'install'` the service
+worker writes an `OnboardingState` marker, opens the dashboard, and starts the
+backfill itself, with no separate confirmation step (DECISIONS.md has the
+automatic-vs-ask reasoning). `FirstRun.tsx` is a full-screen takeover the
+dashboard renders instead of the normal four-tab layout whenever an
+`OnboardingState` record exists and no `BackfillSummary` does yet — it states
+what is happening (90 days of history, titles only), reuses §9's exact
+permission framing ("read locally, nothing transmitted, source is public"),
+and streams progress, stored-page counts and **named** topic counts live via
+the same `useBackfillProgress` poll hook `Backfill.tsx` uses, plus an
+independent poll of the cluster store so topics fill in during the run rather
+than only at the end. Cancel is genuinely cooperative, not cosmetic: it rides
+the same `Slicer` yield-checkpoints the chunked collapse/cluster passes
+already yield at (§14), via a `BackfillCancelledError` sentinel and a
+`shouldCancel` callback threaded through `runBackfill`, `collapseNearDuplicatesChunked`
+and `clusterByMutualKnnChunked`; a cancelled run returns `null` rather than a
+fabricated `BackfillSummary`. The manual "Start backfill" / "Run again" button
+in Settings is unaffected and stays the only re-run path — first-run never
+shows a second time once a `BackfillSummary` exists.
+
 **Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
 these are quality gaps found on real queries. Status as of step 1's full
 search UI:
@@ -816,6 +841,7 @@ true now* and *what you must do*.
 | MV3 message passing is a broadcast, not a channel — every message needs an explicit `target` | `chrome.runtime.sendMessage` delivers to *every* listener in every context. A dashboard PING arrived at the background and the offscreen document simultaneously, and since only the first `sendResponse` wins, the caller silently got whichever replied first. `target` is part of every message variant so one cannot be built without it, and `onMessage(self, …)` filters centrally so a new listener cannot reintroduce the bug |
 | The service worker holds no state about other contexts | It is torn down after ~30s idle, so anything it remembers about another context is a lie the moment it sleeps. An "offscreen ready" flag set by a push announcement at offscreen load died with the worker instance that received it, and the offscreen document only announced once — the flag could never become true again. Readiness is pulled on demand (create if absent, ping, await reply), which is stateless and therefore sleep-proof |
 | An absolute similarity *floor* is the same transferability bug as an absolute clustering *threshold* | `--min-sim` was a fixed 0.20 sitting on the measured within-topic median of 0.194 — the exact failure the rank-based decision above was taken to avoid, reintroduced under a different parameter name. Swept, and on real history it proved **inert**: results are byte-identical across 0.05–0.20 because every node's top-15 neighbours already exceed 0.20. Harmless here, wrong in kind, and it would bite on a sparser corpus |
+| **A cancel control must be genuinely cooperative, checked only at an existing yield point — never a separate polling mechanism** | Applied when `runBackfill` gained cancellation: `collapseNearDuplicatesChunked` and `clusterByMutualKnnChunked` already yield via `chunk.ts`'s `Slicer` between iterations of their O(n²) passes (§14 above), so `shouldCancel` is checked immediately after each `yieldNow()` and nowhere else. This is not a style preference — JS's single-threadedness means a flag cannot change mid-iteration regardless of mechanism, so checking anywhere *but* an existing yield point either does nothing extra or requires inventing a new suspension point that the chunking design deliberately does not have. A cancelled run throws a dedicated `BackfillCancelledError`, caught once at the top of `runBackfill` and once more inside clustering's own non-fatal try/catch (which must re-throw it rather than treat it as an ordinary clustering failure) — and returns `null`, never a `BackfillSummary`, because a completed-looking record for a run that did not complete is the same dishonesty the report-enumeration rule above forbids, applied to a control instead of a report |
 
 ## 15. Known limitations — state these honestly in the README
 

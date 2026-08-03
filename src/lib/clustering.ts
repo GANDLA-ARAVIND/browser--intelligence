@@ -20,7 +20,7 @@
  * 384 dims and has no trustworthy JS implementation. See CLAUDE.md §14.
  */
 
-import { createSlicer, DEFAULT_SLICE_MS } from './chunk.js';
+import { BackfillCancelledError, createSlicer, DEFAULT_SLICE_MS } from './chunk.js';
 import { centroidOf, dot, dotVec } from './vectors.js';
 
 export interface Cluster {
@@ -169,7 +169,8 @@ export async function clusterByMutualKnnChunked(
   matrix: Float32Array,
   count: number,
   options: KnnOptions,
-  sliceMs: number = DEFAULT_SLICE_MS
+  sliceMs: number = DEFAULT_SLICE_MS,
+  shouldCancel?: () => boolean
 ): Promise<ClusterResult & { mutualEdges: number; bridgesCut: number; components: number }> {
   const { k, sharedMin, minSim: floor, minClusterSize } = options;
 
@@ -192,7 +193,10 @@ export async function clusterByMutualKnnChunked(
 
   const slicer = createSlicer(sliceMs);
   for (let i = 0; i < count; i++) {
-    if (slicer.due()) await slicer.yieldNow();
+    if (slicer.due()) {
+      await slicer.yieldNow();
+      if (shouldCancel?.()) throw new BackfillCancelledError();
+    }
     for (let j = i + 1; j < count; j++) {
       const sim = dot(matrix, i, j);
       if (sim < floor) continue;
@@ -230,7 +234,10 @@ export async function clusterByMutualKnnChunked(
   let mutualEdges = 0;
   let bridgesCut = 0;
   for (let i = 0; i < count; i++) {
-    if (slicer.due()) await slicer.yieldNow();
+    if (slicer.due()) {
+      await slicer.yieldNow();
+      if (shouldCancel?.()) throw new BackfillCancelledError();
+    }
     for (const j of topIndex[i]!) {
       if (j <= i || !neighbourSets[j]!.has(i)) continue;
       if (sharedNeighbours(i, j) < sharedMin) {

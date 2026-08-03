@@ -11,7 +11,7 @@
  * separate "Sign in" clusters.
  */
 
-import { createSlicer, DEFAULT_SLICE_MS } from './chunk.js';
+import { BackfillCancelledError, createSlicer, DEFAULT_SLICE_MS } from './chunk.js';
 import { centroidOf, dot, EMBEDDING_DIM } from './vectors.js';
 import type { Page } from './types.js';
 
@@ -121,7 +121,8 @@ export async function collapseNearDuplicatesChunked(
   matrix: Float32Array,
   pages: Page[],
   threshold: number = DEFAULT_DUPLICATE_THRESHOLD,
-  sliceMs: number = DEFAULT_SLICE_MS
+  sliceMs: number = DEFAULT_SLICE_MS,
+  shouldCancel?: () => boolean
 ): Promise<CollapseResult> {
   const count = pages.length;
   const parent = new Int32Array(count);
@@ -142,8 +143,13 @@ export async function collapseNearDuplicatesChunked(
   for (let i = 0; i < count; i++) {
     // Between outer iterations only: one iteration is O(n) dot products, a few
     // milliseconds at this corpus size, so this bounds the block without
-    // putting an await in the inner loop where it would dominate.
-    if (slicer.due()) await slicer.yieldNow();
+    // putting an await in the inner loop where it would dominate. Checked
+    // right after yielding, never on the iterations that don't — nothing
+    // async happens in between, so the flag cannot have changed.
+    if (slicer.due()) {
+      await slicer.yieldNow();
+      if (shouldCancel?.()) throw new BackfillCancelledError();
+    }
     for (let j = i + 1; j < count; j++) {
       if (dot(matrix, i, j) >= threshold) {
         const rootI = find(i);
@@ -173,7 +179,10 @@ export async function collapseNearDuplicatesChunked(
 
   const repMatrix = new Float32Array(groups.length * EMBEDDING_DIM);
   for (let position = 0; position < groups.length; position++) {
-    if ((position & 0xff) === 0 && slicer.due()) await slicer.yieldNow();
+    if ((position & 0xff) === 0 && slicer.due()) {
+      await slicer.yieldNow();
+      if (shouldCancel?.()) throw new BackfillCancelledError();
+    }
     repMatrix.set(centroidOf(matrix, groups[position]!.members), position * EMBEDDING_DIM);
   }
 

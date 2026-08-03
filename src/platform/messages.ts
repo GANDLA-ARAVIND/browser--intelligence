@@ -45,6 +45,12 @@ export type Message =
   // offscreen document — §3 gives the service worker the routing role.
   | { target: 'background'; type: 'START_BACKFILL' }
   | { target: 'background'; type: 'GET_BACKFILL_PROGRESS' }
+  // Cooperative cancel (CLAUDE.md §14's honesty standard applied to a control,
+  // not a report): sent to the background, which sets its own flag for the
+  // brief history-read phase *and* forwards it to the offscreen document,
+  // which owns the flag `runBackfill`'s `shouldCancel` actually polls.
+  | { target: 'background'; type: 'CANCEL_BACKFILL' }
+  | { target: 'offscreen'; type: 'CANCEL_BACKFILL' }
   // Settings travel with the job: offscreen documents are restricted to
   // chrome.runtime, so they cannot read chrome.storage themselves.
   | { target: 'offscreen'; type: 'RUN_BACKFILL'; visits: RawVisit[]; blockedCategories: SensitiveCategory[] }
@@ -161,6 +167,7 @@ export interface ReplyMap {
   GET_STATUS: StatusResponse;
   START_BACKFILL: AcceptedResponse;
   RUN_BACKFILL: AcceptedResponse;
+  CANCEL_BACKFILL: AcceptedResponse;
   GET_BACKFILL_PROGRESS: ProgressResponse;
   SEARCH: SearchResponse;
   CAPTURE_PAGE: AcceptedResponse;
@@ -215,6 +222,7 @@ export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean
   GET_STATUS: isStatusResponse,
   START_BACKFILL: isAcceptedResponse,
   RUN_BACKFILL: isAcceptedResponse,
+  CANCEL_BACKFILL: isAcceptedResponse,
   GET_BACKFILL_PROGRESS: isProgressResponse,
   SEARCH: isSearchResponse,
   CAPTURE_PAGE: isAcceptedResponse,
