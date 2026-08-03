@@ -786,6 +786,45 @@ tr[data-missing='true'] td:first-child {
 
 /* --- topics (§12) ------------------------------------------------------ */
 
+.topics-chart {
+  margin: 1.4rem 0 0;
+  padding: 1rem 1.1rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.topics-chart-legend {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.3rem 0.9rem;
+  font-size: 0.8125rem;
+  color: var(--fg);
+}
+
+.topics-chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.topics-chart-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.topics-chart-caption {
+  margin: 0.5rem 0 0.9rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
 .topic-grid {
   list-style: none;
   margin: 1.4rem 0 0;

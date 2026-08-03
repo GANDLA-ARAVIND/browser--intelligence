@@ -738,9 +738,37 @@ un-special-cased.** Its ugly label is the diagnostic that the failure mode is
 real, and hiding it here would remove the one place a user could notice the
 same thing this project already noticed from the same evidence.
 
-Not built this step, deliberately: the topics-over-time stacked-area chart
-(§12) compares across every topic on one shared timeline and is a distinct
-piece of work from a single card's own sparkline; it is next.
+**Step 4 (topics-over-time chart) is complete**, placed above the card grid
+on the Topics tab. A Recharts stacked area chart, weeks on the X axis, pages
+on the Y axis (labelled explicitly — constraint 1 of this step, and the same
+unit rule step 3 already applies to the cards) — one band per topic, the top
+8 by page count, everything else folded into an "Other" band. **Recharts is
+the dependency this step earns**: the per-card sparklines stay hand-rolled
+SVG because one topic's own shape does not need a charting library, but
+comparing 8+ topics on a shared weekly axis, stacked, with a legend and a
+tooltip, is exactly what one is for — added as a real `dependencies` entry
+(`TopicsOverTimeChart.tsx`), not a dev-only or optional one, since it ships in
+the built dashboard bundle. A stacked area is the deliberate exception to
+§12's general "prefer horizontal bars over pie charts" — this is a case a
+stacked area is the *correct* chart, not the one being reached for by habit.
+
+Only **labelled** clusters can hold their own band; an unlabelled cluster
+folds into "Other" regardless of size, because a legend has no room for its
+three-titles-plus-count fallback (§14) the way a card does — showing that
+fallback in a legend swatch would be a different unnamed-cluster problem in a
+new place. Pages with no `clusterId` at all — never clustered, §5's discovery
+queue — are excluded from the chart entirely rather than folded into "Other":
+"Other" answers "a real topic that didn't make the top 8", which is a
+different question from "not in any topic," and blending the two would make
+one band answer both. The "Other" band itself only appears when it would
+actually contain something, so a corpus with 8 or fewer named topics and no
+unlabelled overflow never shows an always-zero legend entry.
+
+Small print beneath the chart states the same last-touch-vs-reading-timeline
+caveat §15 already documents for sessions, applied here: a backfilled page's
+`firstVisit === lastVisit`, so a page actually read across three weeks
+appears as a single point in whichever week it was last touched, not spread
+across the weeks it was actually read.
 
 **Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
 these are quality gaps found on real queries. Status as of step 1's full

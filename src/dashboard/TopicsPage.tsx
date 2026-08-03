@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getAllClusters, getAllPages, openDatabase, type ClusterRecord, type PageRecord } from '../lib/storage.js';
 import { faviconUrl } from './favicon.js';
+import { TopicsOverTimeChart } from './TopicsOverTimeChart.js';
 
 /** §14: a cluster never displays a name it did not derive — this many of its
  *  most-visited titles stand in for one that labelling could not name. */
@@ -64,7 +65,7 @@ function bucketActivity(pages: PageRecord[], bucketCount: number): number[] {
  * the dashboard.
  */
 export function TopicsPage(): React.JSX.Element {
-  const [cards, setCards] = useState<TopicCard[] | null>(null);
+  const [raw, setRaw] = useState<{ clusters: ClusterRecord[]; pages: PageRecord[] } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -72,53 +73,62 @@ export function TopicsPage(): React.JSX.Element {
       try {
         const db = await openDatabase();
         const [clusters, pages] = await Promise.all([getAllClusters(db), getAllPages(db)]);
-
-        // Pages, not nodes — the fifth unit-mixing instance CLAUDE.md §14
-        // already records. `clusterId` is stamped on every page a cluster
-        // covers once its collapsed representatives are expanded
-        // (`replaceClusters` in storage.ts), not just the representatives
-        // themselves — those are `memberIds`, one per collapsed near-duplicate
-        // group, and displaying *that* count here would be exactly the bug
-        // this rule exists to prevent. Grouping on `clusterId` directly also
-        // reflects any retroactive deletion since the last clustering run,
-        // which `cluster.size` — a snapshot from that run — would not.
-        const byCluster = new Map<string, PageRecord[]>();
-        for (const page of pages) {
-          if (page.clusterId === undefined) continue;
-          const list = byCluster.get(page.clusterId);
-          if (list === undefined) byCluster.set(page.clusterId, [page]);
-          else list.push(page);
-        }
-
-        const built: TopicCard[] = [];
-        for (const cluster of clusters) {
-          const clusterPages = byCluster.get(cluster.id) ?? [];
-          // Every page this cluster covered has since been deleted — nothing
-          // left to show, and a named card with no content behind it would be
-          // its own small dishonesty.
-          if (clusterPages.length === 0) continue;
-          built.push({
-            cluster,
-            pages: clusterPages,
-            name: cluster.label ?? fallbackName(clusterPages),
-            isFallbackName: cluster.label === null,
-            lastTouched: Math.max(...clusterPages.map((page) => page.lastVisit)),
-            buckets: bucketActivity(clusterPages, SPARKLINE_BUCKETS),
-          });
-        }
-
-        // §12: page count, descending, by default.
-        built.sort((a, b) => b.pages.length - a.pages.length);
-        setCards(built);
+        setRaw({ clusters, pages });
       } catch {
-        setCards([]);
+        setRaw({ clusters: [], pages: [] });
       }
     })();
   }, []);
 
+  // Kept as one derivation from `raw` rather than built inside the fetch
+  // effect and discarded: the over-time chart above the grid needs the same
+  // clusters/pages, so the raw read happens once and both views share it.
+  const cards = useMemo<TopicCard[] | null>(() => {
+    if (raw === null) return null;
+    const { clusters, pages } = raw;
+
+    // Pages, not nodes — the fifth unit-mixing instance CLAUDE.md §14
+    // already records. `clusterId` is stamped on every page a cluster
+    // covers once its collapsed representatives are expanded
+    // (`replaceClusters` in storage.ts), not just the representatives
+    // themselves — those are `memberIds`, one per collapsed near-duplicate
+    // group, and displaying *that* count here would be exactly the bug
+    // this rule exists to prevent. Grouping on `clusterId` directly also
+    // reflects any retroactive deletion since the last clustering run,
+    // which `cluster.size` — a snapshot from that run — would not.
+    const byCluster = new Map<string, PageRecord[]>();
+    for (const page of pages) {
+      if (page.clusterId === undefined) continue;
+      const list = byCluster.get(page.clusterId);
+      if (list === undefined) byCluster.set(page.clusterId, [page]);
+      else list.push(page);
+    }
+
+    const built: TopicCard[] = [];
+    for (const cluster of clusters) {
+      const clusterPages = byCluster.get(cluster.id) ?? [];
+      // Every page this cluster covered has since been deleted — nothing
+      // left to show, and a named card with no content behind it would be
+      // its own small dishonesty.
+      if (clusterPages.length === 0) continue;
+      built.push({
+        cluster,
+        pages: clusterPages,
+        name: cluster.label ?? fallbackName(clusterPages),
+        isFallbackName: cluster.label === null,
+        lastTouched: Math.max(...clusterPages.map((page) => page.lastVisit)),
+        buckets: bucketActivity(clusterPages, SPARKLINE_BUCKETS),
+      });
+    }
+
+    // §12: page count, descending, by default.
+    built.sort((a, b) => b.pages.length - a.pages.length);
+    return built;
+  }, [raw]);
+
   const selected = useMemo(() => cards?.find((card) => card.cluster.id === selectedId) ?? null, [cards, selectedId]);
 
-  if (cards === null) {
+  if (cards === null || raw === null) {
     return (
       <section className="panel placeholder-page">
         <h2>Topics</h2>
@@ -150,6 +160,9 @@ export function TopicsPage(): React.JSX.Element {
         {cards.length} topic{cards.length === 1 ? '' : 's'}, derived from your own browsing — ranked by page
         count.
       </p>
+
+      <TopicsOverTimeChart clusters={raw.clusters} pages={raw.pages} />
+
       <ul className="topic-grid">
         {cards.map((card) => (
           <li key={card.cluster.id}>
