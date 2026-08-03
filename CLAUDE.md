@@ -253,9 +253,34 @@ absolute cosine scale is dataset-specific (§14), so a fixed cutoff does not
 transfer between users. The shared-neighbour test is what stops chaining —
 mutual-kNN alone welds two topics together through one accidental link.
 
-Clusters get LLM-named from their 8 nearest-centroid titles and are promoted to
-real topics. Below `min-cluster-size` they stay noise — which is exactly what
-makes brief anomalous browsing (a sibling borrowing the laptop) harmless.
+Clusters are named from their 8 nearest-centroid titles and promoted to real
+topics. Below `min-cluster-size` they stay noise — which is exactly what makes
+brief anomalous browsing (a sibling borrowing the laptop) harmless.
+
+### Naming: a degradation ladder, not an LLM
+
+An earlier draft said clusters are "LLM-named". That was written before §2.1
+had teeth, and it does not survive contact with it: those 8 titles are the
+*most* identifying data in the corpus — a real name, an employer shortlist, a
+job-search timeline — so any cloud call would make the README's central claim
+false. **Cloud naming is rejected outright** (DECISIONS.md). Each rung below
+is independently sufficient, and every user gets at least rung 2:
+
+1. **On-device LLM** — an optional upgrade where one is available (Chrome's
+   built-in Prompt API, or a local runtime the user already runs). Nothing
+   leaves the machine. Never required.
+2. **Derived keyphrase (default, always available).** Class-based TF-IDF over
+   the cluster's own titles: `src/lib/labels.ts`. A term wins only if it is
+   frequent *inside* the cluster and rare *across* the others, which makes it
+   **structurally incapable of producing "Technology"** — a word common
+   corpus-wide cannot win anywhere. That is the §11 Phase 0 failure mode
+   eliminated by arithmetic rather than by a banned-word list.
+3. **Top titles plus a count** — the floor. A cluster with no name is still
+   useful, which is exactly how Phase 0's exit criterion was judged in the
+   first place: by reading the 8 nearest titles, with no label involved.
+
+**A cluster never displays a name it did not derive** (§14). `label` stays
+`null` rather than becoming "Cluster 7" or "Miscellaneous".
 
 HDBSCAN was the original choice and was rejected: it needs a UMAP step to
 behave on 384 dims and has no trustworthy JS port. `--algo community` and
@@ -730,6 +755,10 @@ true now* and *what you must do*.
 
 | Rule | Why it binds |
 |---|---|
+| **Proper nouns dominate short-title embeddings — one cause, two opposite symptoms, and no graph parameter fixes either** | Measured on the real corpus. **Over-split:** `Software Engineer - Bengaluru - Capgemini` ~ the same role in Hyderabad at Capgemini = **0.889**, against the same role at Infosys **0.775**, Microsoft **0.509**, UnitedHealth **0.510** — the employer beats the shared role by up to **38 points**, so mutual-kNN forms per-employer neighbourhoods and produces ~15 near-duplicate career clusters. **Over-merge:** cluster #1's weakest internal link (person-name ~ Telangana-place) is **0.358**, against **0.417** for two genuinely related LeetCode pages — so 323 pages of LinkedIn profiles, map lookups and a temple are mutually dense, share neighbours honestly, and `shared>=4` passes correctly. There is no bridge to cut; the shared-neighbour test is working. Both follow from the same fact: where a title is almost entirely transliterated proper nouns, MiniLM has no topical signal to offer and only orthographic similarity remains; where names compete with real content, the name wins. **The lever is the input representation, not the graph.** Tuning `shared`/`knn` to fix one symptom worsens the other — raising `shared` shatters the career clusters further before it touches #1, whose internal density exceeds a genuine on-topic pair's. Do not attempt to tune either symptom away (see also the `largest%` rule above) |
+| **Any per-cluster display must state whether it is showing nodes or pages** | Fifth instance of the unit-mixing class, and this one misled a live diagnosis rather than just a reader. The "8 nearest titles" shown per cluster were **node representatives**, so cluster #1 read as a pile of LinkedIn profiles when by page count it is **83% Google Maps** (268 of 323) — 50 nodes standing for 323 pages, and the display silently showed the former while the size beside it counted the latter. Every conclusion drawn from that view was about the wrong population. Clustering operates on collapsed nodes; users think in pages; the two differ by ~2× at this corpus size and by more wherever collapse bit hard. **Label the unit at every surface, and where both appear, give each its own total** — `ClusteringSummary` already separates `nodes {…}` from `pages {…}` for this reason, and a nearest-title list must say it is showing representatives and how many pages each stands for. Same class as the blocklist audit reporting 18 rows beside a 59-page difference (`DROP_UNIT`) |
+| **A label that reads badly on an incoherent cluster is DIAGNOSTIC, not a defect** | Cluster #1 — 323 pages of LinkedIn profiles, Telangana map lookups and a temple — was labelled `shri veerabhadreshwara swamy temple · changlera google maps`, which reads terribly *and is why the broken cluster was noticed at all*. An LLM handed those same eight titles would confidently emit something like "Telangana Networking" and the cluster would look coherent while being nothing of the kind. **Any naming layer that smooths over bad clustering removes the only signal that clustering failed** — the ugliness is load-bearing. This is the standing reason derived keyphrases remain the default even if an on-device LLM is added later (§5's ladder): a keyphrase can only report words that are actually there, so it cannot invent a coherence the data does not have. The same argument as §2's rejection of invented scores, applied to prose: a plausible name for an incoherent group is a fabricated summary |
+| **A cluster never displays a name it did not derive** | `ClusterRecord.label` stays `null` when naming produces nothing, and the UI falls back to the cluster's top titles and page count (§5's ladder). It must never become "Cluster 7", "Miscellaneous", "Other" or a topic index. **An invented name is the §2 no-invented-metrics problem in another form** — the objection to productivity scores was never that they are imprecise, it is that they are *fabricated*, users detect that immediately, and the loss of trust contaminates every honest feature beside them. A placeholder name asserts the system understood something it did not, on the one surface whose whole job is to say what the user was doing. Null is honest and the fallback is still useful; a made-up name is neither |
 | **A report must enumerate what it EXPECTS and mark the missing, never enumerate only what it found** | A report driven by a hardcoded list of what to display, or built from the keys that happen to be present, can show presence but is structurally incapable of showing absence — and absence is the thing worth reporting. **Three instances, same shape:** (1) the "What was dropped" panel scanned *surviving* pages to report what the blocklist removed — but blocked pages are never stored, so it always answered ≈0 and testified that nothing was suppressed; (2) the empty `catch` on the capture-delivery call, where a permanent orphaned-context failure and a transient worker restart were both discarded identically, so total capture loss looked like normal operation; (3) `STAGE_ORDER` in the dashboard held its own copy of the pipeline's stage list, so when `cluster` was added it **ran, recorded its duration and produced 104 clusters while the timings table filtered the row out** — the stage was invisible *while working perfectly*, and three separate causes (ran-but-omitted, threw, never reached) all rendered as the same blank space. In every case the reporting mechanism and the thing reported drifted apart with nothing surfacing the gap. **Enumerate the expected set, render every member, and mark the absent ones with a reason.** Where the expected set is derivable from code, derive it (`TIMED_STAGES` is now the single source of truth, `time()` is typed to it, and preflight asserts the dashboard has not reintroduced a local copy) |
 | **Never tune clustering on noise% alone — `largest%` is the alarm** | Noise looks like the obvious objective: lower is better, more pages classified. It is not, and optimising it ships the exact failure the shared-neighbour test exists to prevent. Measured on the real mixed corpus at `k=10`: `shared=4` gives **34.3% noise, largest 4.8%** (the default); `shared=3` gives **22.5% noise, largest 47.4%** — noise improves by twelve points while *one cluster swallows half the graph*. That is chaining, and a tuner watching only noise would ship it as an improvement and call it a win. Worse at `k=15, shared=2`: **3.6% noise, largest 95.6%** — a near-perfect noise score for a single blob containing almost everything, which classifies nothing. **Always report `largest%` beside `noise%`, and treat a rising `largest%` as disqualifying regardless of what noise does.** Noise is not failure — §5 calls the unclustered pool the discovery queue |
 | Clustering keys on neighbour *rank*, not an absolute cosine cutoff | Measured on MiniLM title embeddings: same-topic pairs median 0.194, cross-topic median 0.021 — the separation is real but the absolute scale is dataset-specific, so a fixed threshold does not transfer |

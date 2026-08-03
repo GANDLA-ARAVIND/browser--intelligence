@@ -12,6 +12,7 @@
 import { DEFAULT_BLOCKED_CATEGORIES, type SensitiveCategory } from './blocklist.js';
 import { startBlockingMonitor, type BlockingEvent } from './blocking.js';
 import { clusterByMutualKnnChunked } from './clustering.js';
+import { labelClusters } from './labels.js';
 import { collapseNearDuplicatesChunked, DEFAULT_DUPLICATE_THRESHOLD, expandGroups } from './dedupe.js';
 import { createEmbedder, EMBEDDING_BATCH_SIZE, EMBEDDING_DIM, type EmbedderOptions } from './embeddings.js';
 import { filterHistory, summariseAudit, type FilterAuditSummary } from './filter.js';
@@ -286,21 +287,38 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSum
           minClusterSize: CLUSTER_MIN_SIZE,
         });
 
+        // Membership first, then labels, then records — `labelClusters` scores
+        // a term by how rare it is *across* clusters, so it needs all of them
+        // at once and cannot run inside a per-cluster loop.
+        const membership = clusters.map((cluster, index) => ({
+          id: `c${index}-${hashId(cluster.members.join(','))}`,
+          cluster,
+          pageIndices: expandGroups(groups, cluster.members),
+        }));
+
+        // Every title in the cluster, not just the 8 nearest. The "8 nearest"
+        // in §5 was a token budget for an LLM prompt; c-TF-IDF has no such
+        // budget, and more evidence is strictly better.
+        const labels = new Map(
+          labelClusters(
+            membership.map((m) => ({ id: m.id, titles: m.pageIndices.map((i) => pages[i]!.title) }))
+          ).map((l) => [l.id, l.label])
+        );
+
         const records: ClusterRecord[] = [];
         const pageIdToCluster = new Map<string, string>();
-        clusters.forEach((cluster, index) => {
-          const id = `c${index}-${hashId(cluster.members.join(','))}`;
-          const memberPageIndices = expandGroups(groups, cluster.members);
-          for (const pageIndex of memberPageIndices) pageIdToCluster.set(idFor(pages[pageIndex]!), id);
+        for (const { id, cluster, pageIndices } of membership) {
+          for (const pageIndex of pageIndices) pageIdToCluster.set(idFor(pages[pageIndex]!), id);
           records.push({
             id,
             memberIds: cluster.members.map((groupIndex) => idFor(pages[groups[groupIndex]!.representative]!)),
-            size: memberPageIndices.length,
+            size: pageIndices.length,
             centroid: new Float32Array(cluster.centroid),
-            label: null, // named by the Phase 3 step 3 LLM pass, never before
+            // `null` when nothing was derivable — never a placeholder (§14).
+            label: labels.get(id) ?? null,
             createdAt: Date.now(),
           });
-        });
+        }
 
         await replaceClusters(db, records, pageIdToCluster);
 

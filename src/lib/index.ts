@@ -16,6 +16,7 @@ export * from './vectors.js';
 export * from './embeddings.js';
 export * from './dedupe.js';
 export * from './clustering.js';
+export * from './labels.js';
 export * from './blocklist.js';
 export * from './format.js';
 
