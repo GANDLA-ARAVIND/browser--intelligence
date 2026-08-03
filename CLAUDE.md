@@ -639,6 +639,8 @@ blocks (§5, §7). It writes `ClusterRecord`s and stamps `PageRecord.clusterId`;
 **it does not write `topics`** — a cluster is a shape, a topic is a *name*, and
 naming is step 3. An unnamed cluster must never surface as a topic.
 
+**Step 4 is complete.** Sessions group by a 30-minute activity gap, are labelled by the same c-TF-IDF labeller as clusters, and rebuild on a ~2 minute debounce after the last capture (§7) — never deferred to midnight. §7's 04:00 boundary assigns a session to a *day*; it does not cut one, because splitting a continuous 03:50–04:10 run would invent a boundary the user never experienced. Sessions are counted in **pages, not collapsed nodes** (§14): twenty visits to one problem are twenty moments of an afternoon, and collapsing them would erase its shape. See §15 for what backfilled sessions can and cannot tell you.
+
 **Detect passive-media SESSIONS, not passive pages.** Signature: multiple
 sequential pages, same domain, `activeSeconds` ~0 across all of them, and short
 per-page duration. A single long page with `activeSeconds` ~0 is *attention* —
@@ -839,12 +841,38 @@ true now* and *what you must do*.
   vodcast at text@256/512. This is inherent to the model class and the input
   length, not a gap more context closes. The README should not promise
   natural-language question answering.
-- **Backfilled sessions are approximate; live-captured ones are exact.**
-  `chrome.history.search()` returns only `lastVisitTime`, so every backfilled
-  page is stored with `firstVisit === lastVisit` — a page read across three
-  weeks looks like a single moment. Session grouping over backfilled history is
-  therefore a reconstruction, not a record. Pages captured live carry real first
-  and last visit times and real `activeSeconds`, so sessions from the day the
-  extension was installed onwards are exact. Say which is which in the UI rather
-  than blending them silently. (`chrome.history.getVisits()` would give the true
-  sequence but costs one call per URL — thousands on a first run.)
+- **Backfilled sessions reconstruct the LAST-TOUCH timeline, not the reading
+  timeline — and the difference is undetectable from the data.**
+  `chrome.history.search()` returns only `lastVisitTime`, so a session is
+  "pages whose last touch clustered here", never "pages read together". A page
+  first read in May and revisited in July appears **only** in July's session,
+  and May's session is missing it entirely. Backfilled sessions therefore
+  over-represent recent activity and under-represent the sessions that actually
+  happened. This is survivorship bias in the timeline, not fabrication — every
+  page in a session really was touched then — and **no statistic over the
+  stored data can reveal it**, because the evidence that would is exactly what
+  Chrome discarded.
+  Measured on 5,812 pages → 448 sessions: the grouping itself is sound.
+  Timestamps are genuinely distinct (5,757 distinct values across 5,769
+  backfilled pages, max 2 pages sharing one), the gap distribution has real
+  structure (p50 24s, p90 20min, 447 gaps over the 30-minute threshold), and
+  **89% of multi-page sessions have plausible reading rates** (median 0.43
+  pages/min; only 26 of 239 exceed 2/min). So the earlier fear — that collapsed
+  timestamps would produce spurious small sessions — did not materialise; the
+  real problem is subtler and worse, because it cannot be measured.
+  The distortion scales with how many pages carry `visitCount > 1`, which is
+  **unmeasured** — worth quantifying before Phase 4 leans on the timeline.
+  Pages captured live carry real first/last visit times and real
+  `activeSeconds`, so sessions from install onwards are exact. Say which is
+  which in the UI rather than blending them silently — `Session.provenance` is
+  `exact | approximate | mixed` for this reason. (`chrome.history.getVisits()`
+  would give the true sequence but costs one call per URL — thousands on a
+  first run.)
+- **The passive-media detector is implemented but has never fired.** §11's
+  requirement is built (`detectPassiveMedia`), and on the real corpus it
+  returned `true` **zero** times — because 434 of 448 sessions contain no
+  live-captured page and so return `null`, and only 14 could be evaluated at
+  all. `activeSeconds` is 0 by construction on backfilled pages, so a wholly
+  backfilled session has no engagement signal and calling it "not passive"
+  would be an invented finding. The logic is verified; its behaviour on real
+  autoplay is **not**. Treat as untested until live captures accumulate.

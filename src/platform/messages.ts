@@ -43,6 +43,10 @@ export type Message =
   // afterward. Without it, a "removed" page keeps appearing in search results
   // until the next backfill happens to rebuild the index.
   | { target: 'background'; type: 'INVALIDATE_SEARCH' }
+  // Sec 7: sessions recompute on a ~2min debounce after the last capture, never
+  // deferred to midnight - the dashboard at 3pm must show this afternoon.
+  | { target: 'background'; type: 'REBUILD_SESSIONS' }
+  | { target: 'offscreen'; type: 'REBUILD_SESSIONS' }
   | { target: 'offscreen'; type: 'INVALIDATE_SEARCH' };
 
 export interface PongResponse {
@@ -128,6 +132,7 @@ export interface ReplyMap {
   CAPTURE_PAGE: AcceptedResponse;
   DRAIN_QUEUE: DrainResponse;
   INVALIDATE_SEARCH: AcceptedResponse;
+  REBUILD_SESSIONS: AcceptedResponse;
 }
 
 export type ReplyFor<M extends Message> = ReplyMap[M['type']];
@@ -180,4 +185,5 @@ export const REPLY_GUARDS: { [K in Message['type']]: (value: unknown) => boolean
   CAPTURE_PAGE: isAcceptedResponse,
   DRAIN_QUEUE: isDrainResponse,
   INVALIDATE_SEARCH: isAcceptedResponse,
+  REBUILD_SESSIONS: isAcceptedResponse,
 };

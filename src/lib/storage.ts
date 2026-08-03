@@ -10,6 +10,7 @@
  */
 
 import type { TimedStage } from './backfill.js';
+import type { Session, SessionPage } from './sessions.js';
 import type { BlockingEvent } from './blocking.js';
 import type { QueueItem } from './capture.js';
 import type { FilterAuditSummary } from './filter.js';
@@ -17,13 +18,14 @@ import type { Format } from './format.js';
 import type { ExtractionQuality } from './quality.js';
 
 export const DB_NAME = 'browser-intelligence';
-export const DB_VERSION = 4;
+export const DB_VERSION = 5;
 
 export const STORE_PAGES = 'pages';
 export const STORE_GROUPS = 'groups';
 export const STORE_META = 'meta';
 export const STORE_QUEUE = 'queue';
 export const STORE_CLUSTERS = 'clusters';
+export const STORE_SESSIONS = 'sessions';
 
 export type Intent = 'learning' | 'debugging' | 'job-hunting' | 'shopping' | 'entertainment' | 'reference';
 
@@ -247,6 +249,13 @@ export function openDatabase(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_QUEUE, { keyPath: 'id' });
       }
 
+      // v5 adds the sessions store. Sessions are derived and rebuilt whole on
+      // every recompute, so there is nothing to migrate — an empty store is
+      // correct until the next debounced rebuild runs.
+      if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
+        db.createObjectStore(STORE_SESSIONS, { keyPath: 'id' });
+      }
+
       // v4 adds the clusters store. No migration of existing pages is needed:
       // `clusterId` is optional and absent means "not in a cluster", which is
       // exactly true of every record written before clustering existed.
@@ -434,6 +443,56 @@ export async function replaceClusters(
 export async function countUnclusteredPages(db: IDBDatabase): Promise<number> {
   const pages = await getAllPages(db);
   return pages.filter((page) => page.clusterId === undefined).length;
+}
+
+// --- sessions (CLAUDE.md §4, §7) --------------------------------------------
+
+export async function getAllSessions(db: IDBDatabase): Promise<Session[]> {
+  const tx = db.transaction(STORE_SESSIONS, 'readonly');
+  return promisify(tx.objectStore(STORE_SESSIONS).getAll() as IDBRequest<Session[]>);
+}
+
+/**
+ * Full replace, like clusters and groups. Sessions are derived from page
+ * timestamps, so a page deleted through §9's retroactive removal must not
+ * leave a session still claiming it — merging would preserve exactly that.
+ */
+export async function replaceSessions(db: IDBDatabase, sessions: Session[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+    const store = tx.objectStore(STORE_SESSIONS);
+    store.clear();
+    for (const session of sessions) store.put(session);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('session write failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('session write aborted'));
+  });
+}
+
+/**
+ * Maps stored pages into the shape `buildSessions` needs.
+ *
+ * `captured` keys on `extractionQuality`, which storage documents as present
+ * only on live captures — that is the one field that distinguishes a page with
+ * real timestamps and real engagement from a backfilled row where
+ * `firstVisit === lastVisit` and `activeSeconds` is 0 by construction (§15).
+ */
+export function toSessionPages(pages: PageRecord[]): SessionPage[] {
+  return pages.map((page) => ({
+    id: page.id,
+    title: page.title,
+    domain: (() => {
+      try {
+        return new URL(page.url).hostname.replace(/^www\./, '');
+      } catch {
+        return '';
+      }
+    })(),
+    firstVisit: page.firstVisit,
+    lastVisit: page.lastVisit,
+    activeSeconds: page.activeSeconds,
+    captured: page.extractionQuality !== undefined,
+  }));
 }
 
 // --- retroactive removal (CLAUDE.md §9) -------------------------------------

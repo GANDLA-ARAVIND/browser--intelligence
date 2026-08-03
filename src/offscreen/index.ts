@@ -11,12 +11,31 @@
  */
 
 import { idleProgress, runBackfill, type BackfillProgress } from '../lib/backfill.js';
+import { buildSessions } from '../lib/sessions.js';
+import { getAllPages, openDatabase, replaceSessions, toSessionPages } from '../lib/storage.js';
 import { drainQueue } from './drain.js';
 import { invalidateSearchIndex, search } from './searchIndex.js';
 import { onMessage, resourceUrl } from '../platform/browser.js';
 import type { Message, Response } from '../platform/messages.js';
 
 const loadedAt = Date.now();
+
+/**
+ * Rebuilds every session from stored page timestamps and replaces the store.
+ *
+ * Full recompute rather than incremental, for the same reason §5 gives for
+ * clustering: it is cheap at this scale and incremental variants are a bug
+ * factory. It also makes deletion correct for free — a page removed by §9's
+ * retroactive delete simply stops appearing in any session.
+ */
+async function rebuildSessions(): Promise<number> {
+  const db = await openDatabase();
+  const pages = await getAllPages(db);
+  const sessions = buildSessions(toSessionPages(pages));
+  await replaceSessions(db, sessions);
+  console.log(`[offscreen] rebuilt ${sessions.length} sessions from ${pages.length} pages`);
+  return sessions.length;
+}
 
 let progress: BackfillProgress = idleProgress();
 let running = false;
@@ -56,6 +75,17 @@ function handle(message: Message): Promise<Response> | Response | undefined {
     case 'INVALIDATE_SEARCH':
       invalidateSearchIndex();
       return { ok: true, accepted: true };
+
+    // §3 keeps whole-corpus passes out of the dashboard. Sessions are a sort
+    // plus a linear scan — far cheaper than clustering — but it is still a
+    // pass over every page, so it belongs on this side of the boundary.
+    case 'REBUILD_SESSIONS':
+      return rebuildSessions()
+        .then((count) => ({ ok: true as const, accepted: true, reason: `${count} sessions` }))
+        .catch((error: unknown) => ({
+          ok: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        }));
 
     case 'RUN_BACKFILL': {
       if (running) return { ok: true, accepted: false, reason: 'a backfill is already running' };

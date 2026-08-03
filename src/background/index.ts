@@ -172,6 +172,9 @@ async function queueCapture(page: CapturedPage, senderIncognito: boolean): Promi
 
   // Drain off the capture path, not on it.
   scheduleDrain();
+  // Debounced: re-creating the alarm replaces the pending one, so a browsing
+  // burst rebuilds sessions once when it settles rather than once per page.
+  scheduleSessionRebuild();
   return { ok: true, accepted: true };
 }
 
@@ -182,9 +185,35 @@ async function queueCapture(page: CapturedPage, senderIncognito: boolean): Promi
  */
 const DRAIN_ALARM = 'drain-queue';
 
+/**
+ * §7: sessions are recomputed ~2 minutes after the *last* capture, and
+ * explicitly **not** deferred to midnight — a user opening the dashboard at
+ * 3pm must see this afternoon's sessions, not an empty screen.
+ *
+ * `chrome.alarms.create` with an existing name replaces the pending alarm, so
+ * re-scheduling on every capture is a genuine debounce: a browsing burst
+ * rebuilds once when it settles rather than once per page.
+ */
+const SESSION_ALARM = 'rebuild-sessions';
+const SESSION_DEBOUNCE_MINUTES = 2;
+
 function scheduleDrain(): void {
   // delayInMinutes is the floor Chrome allows; anything shorter is coerced.
   void chrome.alarms.create(DRAIN_ALARM, { delayInMinutes: 1 });
+}
+
+function scheduleSessionRebuild(): void {
+  void chrome.alarms.create(SESSION_ALARM, { delayInMinutes: SESSION_DEBOUNCE_MINUTES });
+}
+
+async function runSessionRebuild(): Promise<void> {
+  try {
+    await ensureOffscreenDocument();
+    const result = await sendMessage({ target: 'offscreen', type: 'REBUILD_SESSIONS' });
+    console.log(`[background] session rebuild: ${result?.reason ?? 'no reply'}`);
+  } catch (error) {
+    console.error('[background] session rebuild failed', error);
+  }
 }
 
 async function runDrain(): Promise<void> {
@@ -202,6 +231,7 @@ async function runDrain(): Promise<void> {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DRAIN_ALARM) void runDrain();
+  if (alarm.name === SESSION_ALARM) void runSessionRebuild();
 });
 
 function handle(message: Message, context: MessageContext): Promise<Response> | Response | undefined {
@@ -239,6 +269,9 @@ function handle(message: Message, context: MessageContext): Promise<Response> | 
       return ensureOffscreenDocument()
         .then(() => sendMessage({ target: 'offscreen', type: 'GET_BACKFILL_PROGRESS' }))
         .then((reply) => reply ?? { ok: false as const, error: 'offscreen document unreachable' });
+
+    case 'REBUILD_SESSIONS':
+      return runSessionRebuild().then(() => ({ ok: true as const, accepted: true }));
 
     case 'INVALIDATE_SEARCH':
       return ensureOffscreenDocument()
