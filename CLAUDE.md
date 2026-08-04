@@ -674,8 +674,8 @@ support, not the compute the isolation rule keeps out of this context.
 **Four surfaces behind top-level navigation** — Search (default), Topics,
 Today, Settings — replacing a single scrolling page that put wiring probes,
 stage timings, a stall table and a filter-drop audit ahead of the primary
-surface §1 names. Today is a placeholder until step 2; Topics (step 3) is
-built below.
+surface §1 names. All four are built; Today (step 2) and Topics (step 3) are
+below.
 Settings holds backfill, blocked categories, retroactive removal, export and
 delete-range — the controls someone actually reaches for — plus a collapsed
 **Diagnostics** section (`Diagnostics.tsx`) holding everything that moved out
@@ -791,6 +791,62 @@ caveat §15 already documents for sessions, applied here: a backfilled page's
 `firstVisit === lastVisit`, so a page actually read across three weeks
 appears as a single point in whichever week it was last touched, not spread
 across the weeks it was actually read.
+
+**Step 2 (the session timeline) is complete — the last step of Phase 4.** The
+Today tab: horizontal blocks across the day (§12's own example format,
+"2:10–3:40pm · Docker networking · 9 pages"), a day picker built from the
+distinct `day` values actually present in stored sessions rather than a
+free-form date input (picking an arbitrary calendar date could land on a day
+with nothing in it; the picker only ever offers days that have data), and a
+session list below the bar with the same detail expandable per row via a
+native `<details>`-style toggle.
+
+**Provenance is marked, not blended (§15's central requirement for this
+surface).** Every session shows an explicit "Live" / "Reconstructed" / "Partly
+reconstructed" badge, and the encoding is never colour-alone: the timeline
+bar's border style differs too (solid / dashed / dotted), matching the badge
+exactly, so a reconstructed session cannot be mistaken for a live one even
+under a colour-vision deficiency. A day-level banner appears when
+reconstructed sessions outnumber live ones for the day on screen, stating the
+count plainly rather than letting the timeline imply more precision than the
+data backing it has. Unlabelled sessions fall back to their own earliest
+titles (§14) — chronological order, not by-visits: a session is a slice of
+one sitting, not a topic spanning months, so what someone opened first is the
+more useful stand-in than whichever page they returned to most.
+
+**Two bugs found on first real use, both from the same root cause: a value
+computed once and never revisited was trusted as if it were still current.**
+
+1. **The time-range label could show an end before its start.** Reported
+   live: a session's last row read "8:21–8:13pm," and the timeline bar
+   plainly disagreed — it drew the block running to nearly 4am, not stopping
+   at 8:13pm. The formatter extracted only hour/minute/am-or-pm from each
+   timestamp and threw the date away, so a session ending the *next* calendar
+   day rendered with the identical clock face as one ending earlier the same
+   evening. `end` is never actually before `start` — `buildSessions` computes
+   it as the max `lastVisit` across the session's own pages, which is
+   structurally guaranteed to be at or after `start` (the min `firstVisit`)
+   as long as every individual page satisfies `firstVisit <= lastVisit`, and
+   nothing in the capture or backfill pipeline was found able to violate that
+   (DECISIONS.md has the trace). Fixed by comparing calendar dates and
+   appending "(next day)" / "(+N days)" when they differ — checked against
+   local midnight, deliberately not the app's own 04:00 day-boundary, because
+   the question here is only "does this clock face need a date to be
+   unambiguous," not which day bucket §7 assigns the session to. A defensive
+   branch also flags a genuine `end < start` explicitly rather than ever
+   rendering a plausible-looking but wrong range — first written checking
+   only the calendar-day *difference*, which missed a same-day reversal
+   (`dayDiff` is 0 whichever timestamp is larger); caught by this file's own
+   verification pass before shipping and fixed to compare the epoch values
+   directly.
+2. **The "Still going" badge could outlive the session it described.**
+   `Session.provisional` is computed once, at whatever moment sessions last
+   rebuilt (§7's ~2-minute-after-capture debounce), and stored. If no capture
+   has triggered a rebuild since, that flag never gets revisited — a session
+   that was genuinely open when last written keeps claiming "Still going"
+   indefinitely, even days later. The dashboard now recomputes it live
+   (`Date.now() - session.end < PROVISIONAL_WITHIN_MS`) at render time instead
+   of trusting the stored boolean.
 
 **Search backlog, carried from Phase 1 step 4.** Bare search works and is fast;
 these are quality gaps found on real queries. Status as of step 1's full

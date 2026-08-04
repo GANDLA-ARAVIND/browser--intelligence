@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getAllClusters, getAllPages, openDatabase, type ClusterRecord, type PageRecord } from '../lib/storage.js';
-import { faviconUrl } from './favicon.js';
+import { PageRow } from './PageRow.js';
 import { TopicsOverTimeChart } from './TopicsOverTimeChart.js';
 
 /** §14: a cluster never displays a name it did not derive — this many of its
@@ -247,7 +247,7 @@ function TopicDetail({ card, onBack }: { card: TopicCard; onBack: () => void }):
           </p>
           <ol className="results">
             {bestResources.map((page) => (
-              <TopicPageRow key={page.id} page={page} showVisitBadge />
+              <PageRow key={page.id} page={page} showVisitBadge />
             ))}
           </ol>
         </section>
@@ -257,33 +257,10 @@ function TopicDetail({ card, onBack }: { card: TopicCard; onBack: () => void }):
         <h2>Every page, chronologically</h2>
         <ol className="results">
           {chronological.map((page) => (
-            <TopicPageRow key={page.id} page={page} />
+            <PageRow key={page.id} page={page} />
           ))}
         </ol>
       </section>
     </div>
-  );
-}
-
-function TopicPageRow({ page, showVisitBadge }: { page: PageRecord; showVisitBadge?: boolean }): React.JSX.Element {
-  return (
-    <li className="result-card">
-      <img className="result-favicon" src={faviconUrl(page.url)} alt="" width={16} height={16} />
-      <div className="result-body">
-        <div className="result-headline">
-          <a className="result-title" href={page.url} target="_blank" rel="noreferrer">
-            {page.title || '(untitled)'}
-          </a>
-          {showVisitBadge === true && page.visitCount > 1 && (
-            <span className="result-badge">revisited {page.visitCount}×</span>
-          )}
-        </div>
-        <div className="result-meta">
-          <span>{page.format}</span>
-          <span aria-hidden="true">·</span>
-          <span>{new Date(page.lastVisit).toLocaleDateString()}</span>
-        </div>
-      </div>
-    </li>
   );
 }
