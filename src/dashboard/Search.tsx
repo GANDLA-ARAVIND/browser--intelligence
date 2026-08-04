@@ -37,6 +37,35 @@ interface TopicFacet {
   size: number;
 }
 
+/** Result-card opacity floor/ceiling — see `resultsConfidenceOpacity` below. */
+const CONFIDENCE_FLOOR_SCORE = 0.3;
+const CONFIDENCE_CEIL_SCORE = 0.95;
+const CONFIDENCE_FLOOR_OPACITY = 0.55;
+
+/**
+ * v1.1 item 3 (§11, DECISIONS.md). Measured directly rather than assumed: no
+ * combination of top score, gap-to-2, gap-to-5 or top-20 stdev separates
+ * "real hit" queries from "nothing in the corpus matches" ones — the
+ * steepest score drop-off of 15 test queries belonged to a false positive
+ * ("tax filing deadline" at 0.600, matching only on the word "deadline").
+ * A threshold-shaped empty state (hiding results, or switching to a
+ * "nothing closely matched" heading) would assert a binary judgement this
+ * pipeline cannot actually back up — the same invented-confidence problem
+ * §2 already forbids, in a new shape.
+ *
+ * What's honest instead: degrade the whole result list's visual weight
+ * *continuously* with the one available, imperfect signal (the top hit's
+ * own score) — never a discrete "matched" / "didn't" claim, no label, no
+ * invented percentage. Clamped so results stay legible even at the floor;
+ * the existing "ranks, not matches" copy above still carries the honesty in
+ * words, this only carries it visually.
+ */
+function resultsConfidenceOpacity(topScore: number): number {
+  const clamped = Math.min(CONFIDENCE_CEIL_SCORE, Math.max(CONFIDENCE_FLOOR_SCORE, topScore));
+  const t = (clamped - CONFIDENCE_FLOOR_SCORE) / (CONFIDENCE_CEIL_SCORE - CONFIDENCE_FLOOR_SCORE);
+  return CONFIDENCE_FLOOR_OPACITY + t * (1 - CONFIDENCE_FLOOR_OPACITY);
+}
+
 /**
  * Phase 4 step 1 — the real search UI (§12).
  *
@@ -209,6 +238,12 @@ export function Search(): React.JSX.Element {
   const shown = moreLike?.result ?? searchResult;
   const isEmpty = shown === null;
 
+  // Confidence degradation applies only to genuine search results. "More
+  // like this" is a literal vector-neighbour lookup on a real, already-known
+  // page — it never answers "does this topic exist in your history" the way
+  // a typed query does, so the empty-state signal doesn't apply to it.
+  const searchTopScore = moreLike === null ? (searchResult?.hits[0]?.score ?? null) : null;
+
   return (
     <div className={`search-page${isEmpty ? ' search-page-empty' : ''}`}>
       <form onSubmit={onSubmit} className="search-hero-form">
@@ -332,7 +367,10 @@ export function Search(): React.JSX.Element {
             <p className="detail">Nothing indexed yet — run a backfill first.</p>
           )}
 
-          <ol className="results">
+          <ol
+            className="results"
+            style={searchTopScore === null ? undefined : { opacity: resultsConfidenceOpacity(searchTopScore) }}
+          >
             {shown.hits.map((hit) => (
               <ResultCard key={hit.id} hit={hit} onMoreLike={(id, title) => void runMoreLike(id, title)} />
             ))}

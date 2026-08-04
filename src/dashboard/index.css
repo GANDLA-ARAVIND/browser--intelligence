@@ -683,6 +683,10 @@ tr[data-missing='true'] td:first-child {
   padding: 0;
   display: grid;
   gap: 0.9rem;
+  /* v1.1 item 3: opacity is set inline, scaled continuously by the top hit's
+     own score (§11, DECISIONS.md) — this only makes the shift read as a
+     graceful fade rather than a jump between searches. */
+  transition: opacity 200ms ease-out;
 }
 
 .result-card {
