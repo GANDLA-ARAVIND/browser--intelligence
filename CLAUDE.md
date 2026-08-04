@@ -1063,14 +1063,23 @@ true now* and *what you must do*.
   would sit in the same profile an attacker already has. If you share a
   machine, use a separate Chrome profile — that is a real boundary, and it is
   the one we recommend.
-- **Search has no empty state — it always returns results.** Cosine similarity
-  ranks; it does not decide relevance. A query for something the user has never
-  read still returns 20 rows, confidently ordered. Measured: "docker
-  networking" against a corpus with no Docker content returned a full page of
-  results topping out at 0.376, all irrelevant. The score is visible in the UI,
-  but a score is not an answer to "did you find anything". Until a relative
-  confidence signal exists (§11 Phase 4 backlog), the honest framing is that
-  search *ranks* rather than *matches*.
+- **Search has no true empty state, and no metric was found that reliably
+  detects one.** Cosine similarity always returns `k` results; it ranks, it
+  does not decide relevance. The original plan — a relative confidence signal
+  from distribution *shape* (a high top score with a steep drop-off means a
+  real hit, a flat profile means nothing matched) — was measured directly
+  (v1.1 item 3, DECISIONS.md) against 10 real-content queries and 5
+  deliberately absent topics, and disproven: the single steepest drop-off
+  across all 15 queries belonged to a false positive (`"tax filing deadline"`
+  matched `"Deadline Clarification Request"` on the word "deadline" alone,
+  scoring higher and dropping off harder than a genuinely relevant result for
+  a different query). No threshold on any measured signal separates the two
+  groups. **Shipped instead:** result-card opacity degrades continuously with
+  the top match's own score — no label, no invented percentage, no binary
+  "matched" claim — so a weak result set visibly reads as less confident
+  without the UI ever asserting a discrete judgement it cannot support. The
+  honest framing in words stays the same: search *ranks* rather than
+  *matches*.
 - **Near-duplicate pages can still crowd the results.** Collapse merges at 0.97
   cosine, which is near-identity; pages that differ slightly more survive as
   separate nodes and can dominate a result list. Measured: "firebase database
